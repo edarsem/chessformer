@@ -1,6 +1,12 @@
 # Chessformer
 
-The goal of this project is to create a chess engine that understand human level strength and the difficulty to find specific moves. I hope it will be usable as a coach, to help players find the move that they could find according to their level. I suspect that it could also be used as a cheating detection tool as it would have a better understanding of human chess as compared to a stockfish-based cheating detection tool.
+The goal of this project is to create a chess engine that understand human level strength and the difficulty to find specific moves.
+
+I hope it will be usable as a coach, to help players find the move that they could find according to their level.
+
+I suspect that it could also be used as a cheating detection tool as it would have a better understanding of human chess as compared to a stockfish-based cheating detection tool.
+
+Finally, I hope that I can use those models to imitate a specific player style.
 
 I will try to achieve this by trainnig a transformer neural network from scratch.
 

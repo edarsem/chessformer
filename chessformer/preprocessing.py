@@ -15,7 +15,10 @@ num_to_letter = {
     8: 'h'
     }
 
-def fen_to_pretokens(fen):
+def fen_to_pretokens(fen, move):
+    assert len(move) == 4 and move[0] in 'abcdefgh' and move[1] in '12345678' and move[2] in 'abcdefgh' and move[3] in '12345678', "Invalid move"
+    move_from = f"f_{move[:2]}"
+    move_to = f"t_{move[2:]}"
     pretokens = []
     fen_parts = fen.split()
     # Extract color to move
@@ -36,21 +39,19 @@ def fen_to_pretokens(fen):
             else:
                 real_index_col += 1
                 pretokens.append(f"{col}{num_to_letter[real_index_col]}{8-index_row}")
+    pretokens.append(move_from)
+    pretokens.append(move_to)
     return pretokens
 
 def pgn_to_fen(game_data):
-    pre_tokenized_list = []
+    fen_list = []
     pgn = game_data.split("\n\n")
     for game_str in pgn:
         game_string_io = io.StringIO(game_str)
         game = chess.pgn.read_game(game_string_io)
         board = game.board()
         for move in game.mainline_moves():
-                board.push(move)
-                fen = board.fen()
-                pre_tokenized = fen_to_pretokens(fen)
-                pre_tokenized_list.append(pre_tokenized)
-
-# pgn_to_fen(download_games.download_games())
-
-# fen_to_pretokens('8/5ppp/pk2p3/1nn1P2P/3rP1P1/6K1/8/1R6 w - - 2 43')
+            fen = board.fen()
+            fen_list.append((fen, move.uci()))
+            board.push(move)
+    return fen_list

@@ -4,21 +4,13 @@ import io
 
 import download_games
 
-num_to_letter = {
-    1: 'a',
-    2: 'b',
-    3: 'c',
-    4: 'd',
-    5: 'e',
-    6: 'f',
-    7: 'g',
-    8: 'h'
-    }
+num_to_letter = dict(zip(range(1,9), 'abcdefgh'))
 
 def fen_to_pretokens(fen, move):
-    assert len(move) == 4 and move[0] in 'abcdefgh' and move[1] in '12345678' and move[2] in 'abcdefgh' and move[3] in '12345678', "Invalid move"
+    assert len(move) in (4, 5) and move[0] in 'abcdefgh' and move[1] in '12345678' and move[2] in 'abcdefgh' and move[3] in '12345678', f"{move} is an invalid move"
     move_from = f"f_{move[:2]}"
-    move_to = f"t_{move[2:]}"
+    move_to = f"t_{move[2:4]}"
+    promotion = move[4] if len(move) == 5 else None
     pretokens = []
     fen_parts = fen.split()
     # Extract color to move
@@ -41,6 +33,8 @@ def fen_to_pretokens(fen, move):
                 pretokens.append(f"{col}{num_to_letter[real_index_col]}{8-index_row}")
     pretokens.append(move_from)
     pretokens.append(move_to)
+    if promotion:
+        pretokens.append(f'prom_{promotion}')
     return pretokens
 
 def pgn_to_fen(game_data):
@@ -52,6 +46,6 @@ def pgn_to_fen(game_data):
         board = game.board()
         for move in game.mainline_moves():
             fen = board.fen()
-            fen_list.append((fen, move.uci()))
-            board.push(move)
+            if move.uci() != '0000':
+                fen_list.append((fen, move.uci()))
     return fen_list

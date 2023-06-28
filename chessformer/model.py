@@ -108,7 +108,7 @@ class GPTConfig:
     vocab_size: int = 1024 # Should work with 880 tokens (64*12 (pieces & pawns) - 4*8 (pawns on 1st and 8th) + 64*2 (for a move) + 6 (color, KQkq) + 10 (level)) but went for 64*16 = 1024 for efficiency, simplicity and eventual finetuning on several players at once
     n_layer: int = 4
     n_head: int = 3
-    n_embd: int = 48
+    n_embd: int = 48 # Must be divisible by n_head
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
@@ -238,7 +238,7 @@ class GPT(nn.Module):
         return mfu
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    def generate(self, idx, max_new_tokens=2, temperature=1.0, top_k=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.

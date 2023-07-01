@@ -878,6 +878,14 @@ lvl_6
 lvl_7
 lvl_8
 lvl_9
+ep_a
+ep_b
+ep_c
+ep_d
+ep_e
+ep_f
+ep_g
+ep_h
 prom_n
 prom_r
 prom_b

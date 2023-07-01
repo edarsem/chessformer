@@ -14,6 +14,9 @@ def all_tokens():
             all_tokens.append(f't_{col}{line}')
     for level in range(10):
         all_tokens.append(f'lvl_{level}')
+    # add en passant
+    for col in 'abcdefgh':
+        all_tokens.append(f'ep_{col}')
     # add promotions
     for piece in ['n', 'r', 'b', 'q']:
         all_tokens.append(f'prom_{piece}')
@@ -21,7 +24,7 @@ def all_tokens():
         for item in all_tokens:
             f.write(item + '\n')
 
-# all_tokens()
+all_tokens()
 # write a tokenizer object from the all_tokens text file using the number of the line as the token id. It can encode pretokens and decode to pretokens
 
 class Tokenizer:

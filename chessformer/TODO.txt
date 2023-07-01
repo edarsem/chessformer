@@ -1,0 +1,1 @@
+- eventually deal with 50 move rule and repetition but it's not important yet

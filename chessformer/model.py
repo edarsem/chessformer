@@ -104,7 +104,7 @@ class Block(nn.Module):
 
 @dataclass
 class GPTConfig:
-    block_size: int = 40 # 32 pieces + 4 casteling rights + 2color and level + 2 new move = 40
+    block_size: int = 42 # 32 pieces + 4 casteling rights + 2color and level + 2 new move + 1 promotion + 1 en passant = 42 (Could probably be reduced to 41 because promotion can't happen with 32 pieces)
     vocab_size: int = 1024 # Should work with 892 tokens (64*12 (pieces & pawns) - 4*8 (pawns on 1st and 8th) + 64*2 (for a move) + 6 (color, KQkq) + 10 (level) + 8 en passant + 4 promotion) but went for 64*16 = 1024 for efficiency, simplicity and eventual finetuning on several players at once
     n_layer: int = 4
     n_head: int = 3

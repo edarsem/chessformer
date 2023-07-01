@@ -1,7 +1,7 @@
 import berserk
 import datetime
 
-def download_games(user_name, days_back=2):
+def download_games(user_name, max_games=10, days_back=10):
     f = open("lichess.token", "r")
     token = (f.read())
     token = token.strip()
@@ -22,8 +22,8 @@ def download_games(user_name, days_back=2):
 
     start = berserk.utils.to_millis(datetime.datetime(tdybk, tdmbk, tddbk))
     end = berserk.utils.to_millis(datetime.datetime(tdy, tdm, tdd))
-    user = user_name
 
-    gms = client.games.export_by_player(user, since=int(start), until=int(end), max=500, as_pgn=True)
-    listToStr = ' '.join([str(elem) for elem in list(gms)])
-    return listToStr
+    gms = client.games.export_by_player(user_name, since=int(start), until=int(end), max=max_games, as_pgn=True, perf_type='bitz')
+    games_list = [str(elem) for elem in list(gms)]
+    print(f'Downloaded {len(games_list)} games')
+    return ' '.join(games_list)

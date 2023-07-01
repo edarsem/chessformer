@@ -24,7 +24,7 @@ def fen_to_pretokens(fen, move):
     # Extract en passant square
     en_passant = fen_parts[3]
     if en_passant != '-':
-        pretokens.append(f"ep_{en_passant}")
+        pretokens.append(f"ep_{en_passant[0]}")
     # For each piece, extract the square it is on
     board_rows = fen_parts[0].split("/")
     for index_row, row in enumerate(board_rows):
@@ -52,4 +52,5 @@ def pgn_to_fen(game_data):
             fen = board.fen()
             if move.uci() != '0000':
                 fen_list.append((fen, move.uci()))
+            board.push(move)
     return fen_list

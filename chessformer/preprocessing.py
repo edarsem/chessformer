@@ -6,12 +6,14 @@ import download_games
 
 num_to_letter = dict(zip(range(1,9), 'abcdefgh'))
 
-def fen_to_pretokens(fen, move):
+# iIn training mode, returns a list of all steps to generate (the from move, the to move, and the promotion) with the move to generate being in last position
+def fen_to_pretokens(fen, move, training_mode=False):
     assert len(move) in (4, 5) and move[0] in 'abcdefgh' and move[1] in '12345678' and move[2] in 'abcdefgh' and move[3] in '12345678', f"{move} is an invalid move"
     move_from = f"f_{move[:2]}"
     move_to = f"t_{move[2:4]}"
     promotion = move[4] if len(move) == 5 else None
     pretokens = []
+    all_steps = []
     fen_parts = fen.split()
     # Extract color to move
     color_to_move = fen_parts[1]
@@ -36,9 +38,14 @@ def fen_to_pretokens(fen, move):
                 real_index_col += 1
                 pretokens.append(f"{col}{num_to_letter[real_index_col]}{8-index_row}")
     pretokens.append(move_from)
+    all_steps.append(pretokens.copy())
     pretokens.append(move_to)
+    all_steps.append(pretokens.copy())
     if promotion:
         pretokens.append(f'prom_{promotion}')
+        all_steps.append(pretokens.copy())
+    if training_mode:
+        return all_steps
     return pretokens
 
 def pgn_to_fen(game_data):
@@ -54,3 +61,14 @@ def pgn_to_fen(game_data):
                 fen_list.append((fen, move.uci()))
             board.push(move)
     return fen_list
+
+# Convert a list of fens to a list of pretokens. In training mode, does this for every step of each move
+def fen_list_to_pretokens_list(fen_list, training_mode=False):
+    pretokens_list = []
+    for fen in fen_list:
+        pretokens = fen_to_pretokens(fen[0], fen[1], training_mode)
+        if training_mode:
+            pretokens_list += pretokens
+        else:
+            pretokens_list.append(pretokens)
+    return pretokens_list

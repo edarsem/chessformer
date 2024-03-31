@@ -6,7 +6,7 @@ import download_games
 
 num_to_letter = dict(zip(range(1,9), 'abcdefgh'))
 
-# iIn training mode, returns a list of all steps to generate (the from move, the to move, and the promotion) with the move to generate being in last position
+# In training mode, returns a list of all steps to generate (the from move, the to move, and the promotion) with the move to generate being in last position
 def fen_to_pretokens(fen, move, training_mode=False):
     assert len(move) in (4, 5) and move[0] in 'abcdefgh' and move[1] in '12345678' and move[2] in 'abcdefgh' and move[3] in '12345678', f"{move} is an invalid move"
     move_from = f"f_{move[:2]}"

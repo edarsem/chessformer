@@ -1,3 +1,6 @@
 lichess.token
 __pycache__/
 *.pyc
+data/
+tmp/
+chessformer_old/

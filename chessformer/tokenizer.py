@@ -27,6 +27,10 @@ def create_token_mapping(file):
         json.dump(token_to_id, f)
 
 def tokenize_xfen(xfen_row, token_to_id):
+    """
+    Tokenize an extended FEN row.
+    The 2 first elements are the number of tokens dedicated to the next move and the number of pieces on the board.
+    Maximum 42 tokens as input for a position (1 for the player to move, 1 for the Elo, 1 for the player id if any, 1 for the time control, 4 for castling rights, 1 for en passant, 32 for the board, and 2 to 3 for the move itself but it can't be 3 if there are 32 pieces left and minus 1 because the token in prediction is not as input)."""
     fen, next_move, white_elo, black_elo, time_control = xfen_row.split(',')
 
     # Parse the FEN part
@@ -46,26 +50,31 @@ def tokenize_xfen(xfen_row, token_to_id):
                 file_index += 1
 
     # Player to move
-    fen_tokens.insert(0, token_to_id[f'play_{turn}'])
+    to_move = [token_to_id[f'play_{turn}']]
 
     # Tokenize castling rights
-    castling_tokens = [token_to_id['w_k'] if 'K' in castling else None,
-                       token_to_id['w_q'] if 'Q' in castling else None,
-                       token_to_id['b_k'] if 'k' in castling else None,
-                       token_to_id['b_q'] if 'q' in castling else None]
+    castling_tokens = [
+        token_to_id['w_k'] if 'K' in castling else None,
+            token_to_id['w_q'] if 'Q' in castling else None,
+            token_to_id['b_k'] if 'k' in castling else None,
+            token_to_id['b_q'] if 'q' in castling else None
+        ]
     castling_tokens = [token for token in castling_tokens if token is not None]
 
     # Tokenize en passant square
     en_passant_tokens = [token_to_id['ep_' + en_passant[0]]] if en_passant != '-' else []
 
     # Tokenize next move
-    from_square, to_square = next_move[:2], next_move[2:4]
-    move_tokens = [token_to_id[f'f_{from_square}'], token_to_id[f't_{to_square}']]
-    
-    # Handle promotions, if any
-    if len(next_move) > 4:
-        promotion_piece = 'promote_' + next_move[-1].lower()
-        move_tokens.append(token_to_id[promotion_piece])
+    if next_move:
+        from_square, to_square = next_move[:2], next_move[2:4]
+        move_tokens = [token_to_id[f'f_{from_square}'], token_to_id[f't_{to_square}']]
+        
+        # Handle promotions, if any
+        if len(next_move) > 4:
+            promotion_piece = 'promote_' + next_move[-1].lower()
+            move_tokens.append(token_to_id[promotion_piece])
+    else:
+        move_tokens = []
 
     # Tokenize Elo ratings
     elo_token = [token_to_id[get_elo_token(white_elo)] if turn == 'w' else token_to_id[get_elo_token(black_elo)]]    
@@ -73,7 +82,7 @@ def tokenize_xfen(xfen_row, token_to_id):
     time_control_token = [token_to_id[time_control]]
     
     # Combine all tokenized elements
-    return fen_tokens + move_tokens + elo_token + time_control_token + castling_tokens + en_passant_tokens
+    return [len(move_tokens)] + [len(fen_tokens)//2] + to_move + elo_token + time_control_token + castling_tokens + en_passant_tokens + fen_tokens + move_tokens
 
 def get_elo_token(elo):
     if elo.lower() == 'unknown':

@@ -1,25 +1,30 @@
+import torch
 from torch.utils.data import DataLoader
 from torch.optim import Adam
 from torch.nn import CrossEntropyLoss
 from dataset import ChessDataset, collate_fn
 from model import ChessModel
 
-def train(model, data_loader, epochs=2, max_steps=1000):
+def train(model, data_loader, device, epochs=2, max_steps=1000):
     model.train()
+    model.to(device)
     optimizer = Adam(model.parameters(), lr=0.001)
     criterion = CrossEntropyLoss()
 
+    print(f"Training on {device}")
     steps = 0
     for epoch in range(epochs):
         for batch in data_loader:
             if steps >= max_steps:
                 print(f'Training completed: Maximum steps reached ({max_steps} steps)')
                 break
+            
+            meta_tokens = batch['meta_tokens'].to(device)
+            pieces_tokens = batch['pieces_tokens'].to(device)
+            squares_tokens = batch['squares_tokens'].to(device)
+            next_move = batch['next_move'].to(device) - model.first_class_token # Shift the target tokens by the first class token
+            
             optimizer.zero_grad()
-            meta_tokens = batch['meta_tokens']
-            pieces_tokens = batch['pieces_tokens']
-            squares_tokens = batch['squares_tokens']
-            next_move = batch['next_move']
             output = model(meta_tokens, pieces_tokens, squares_tokens)
             loss = criterion(output, next_move)
             loss.backward()
@@ -28,7 +33,10 @@ def train(model, data_loader, epochs=2, max_steps=1000):
             steps += 1
 
 if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    
     dataset = ChessDataset('tmp/tokenized_xfen.txt')
-    data_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=collate_fn)
+    data_loader = DataLoader(dataset, batch_size=256, shuffle=True, collate_fn=collate_fn)
+    
     model = ChessModel()
-    train(model, data_loader)
+    train(model, data_loader, device)

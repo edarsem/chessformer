@@ -26,18 +26,20 @@ def create_token_mapping(file):
     with open(file, 'w') as f:
         json.dump(token_to_id, f)
 
-def tokenize_xfen(xfen_row, token_to_id):
+def tokenize_xfen(xfen_row, token_to_id, inferrence=False):
     """
     Tokenize an extended FEN row.
     The 2 first elements are the number of tokens dedicated to the next move and the number of pieces on the board.
-    Maximum 42 tokens as input for a position (1 for the player to move, 1 for the Elo, 1 for the player id if any, 1 for the time control, 4 for castling rights, 1 for en passant, 32 for the board, and 2 to 3 for the move itself but it can't be 3 if there are 32 pieces left and minus 1 because the token in prediction is not as input)."""
+    Maximum 42 tokens as input for a position (1 for the player to move, 1 for the Elo, 1 for the player id if any, 1 for the time control, 4 for castling rights, 1 for en passant, 32 for the board, and 2 to 3 for the move itself but it can't be 3 if there are 32 pieces left and minus 1 because the token in prediction is not as input).
+    Inferrence mode when the next move is not available."""
     fen, next_move, white_elo, black_elo, time_control = xfen_row.split(',')
 
     # Parse the FEN part
     board, turn, castling, en_passant, _, _ = fen.split(' ')
 
     # Tokenize the board setup
-    fen_tokens = []
+    pieces_tokens = []
+    squares_tokens = []
     for rank_index, row in enumerate(board.split('/')):
         file_index = 0
         for char in row:
@@ -45,8 +47,8 @@ def tokenize_xfen(xfen_row, token_to_id):
                 file_index += int(char)
             elif char.isalpha():  # This is a chess piece
                 square_index = f"{chr(97 + file_index)}{8 - rank_index}"
-                fen_tokens.append(token_to_id[char])  # Token for the piece
-                fen_tokens.append(token_to_id[square_index])  # Token for the square
+                pieces_tokens.append(token_to_id[char])  # Token for the piece
+                squares_tokens.append(token_to_id[square_index])  # Token for the square
                 file_index += 1
 
     # Player to move
@@ -64,25 +66,31 @@ def tokenize_xfen(xfen_row, token_to_id):
     # Tokenize en passant square
     en_passant_tokens = [token_to_id['ep_' + en_passant[0]]] if en_passant != '-' else []
 
-    # Tokenize next move
-    if next_move:
-        from_square, to_square = next_move[:2], next_move[2:4]
-        move_tokens = [token_to_id[f'f_{from_square}'], token_to_id[f't_{to_square}']]
-        
-        # Handle promotions, if any
-        if len(next_move) > 4:
-            promotion_piece = 'promote_' + next_move[-1].lower()
-            move_tokens.append(token_to_id[promotion_piece])
-    else:
-        move_tokens = []
-
     # Tokenize Elo ratings
     elo_token = [token_to_id[get_elo_token(white_elo)] if turn == 'w' else token_to_id[get_elo_token(black_elo)]]    
     # Tokenize time control
     time_control_token = [token_to_id[time_control]]
     
-    # Combine all tokenized elements
-    return [len(move_tokens)] + [len(fen_tokens)//2] + to_move + elo_token + time_control_token + castling_tokens + en_passant_tokens + fen_tokens + move_tokens
+    # Combine all meta tokens
+    meta_tokens = to_move + elo_token + time_control_token + castling_tokens + en_passant_tokens
+
+    if inferrence:
+        return meta_tokens, pieces_tokens, squares_tokens, None
+
+    # Tokenize next move
+    from_square, to_square = next_move[:2], next_move[2:4]
+    move_tokens = [token_to_id[f'f_{from_square}'], token_to_id[f't_{to_square}']]
+    
+    # Handle promotions, if any
+    if len(next_move) > 4:
+        promotion_piece = 'promote_' + next_move[-1].lower()
+        move_tokens.append(token_to_id[promotion_piece])
+    
+    res = []
+    for id_next_move in range(len(move_tokens)):
+        res.append([meta_tokens + move_tokens[:id_next_move], pieces_tokens, squares_tokens, move_tokens[id_next_move]])
+
+    return res
 
 def get_elo_token(elo):
     if elo.lower() == 'unknown':
@@ -112,10 +120,13 @@ def load_token_mapping(file=all_tokens_file):
         token_to_id = json.load(f)
     return token_to_id
 
-def tokenize_batch(batch, token_to_id):
-    return [tokenize_xfen(xfen_row, token_to_id) for xfen_row in batch]
+def tokenize_batch(batch, token_to_id, inferrence=False):
+    if inferrence:
+        return [tokenize_xfen(xfen_row, token_to_id, inferrence) for xfen_row in batch]
+    # else, we need to loop over the result which is a list instead of one element
+    return [elt for xfen_row in batch for elt in tokenize_xfen(xfen_row, token_to_id, inferrence)]
 
-def process_xfen_file_in_batches(input_file, output_file, token_to_id, batch_size=1000):
+def process_xfen_file_in_batches(input_file, output_file, token_to_id, batch_size=1000, inferrence=False):
     output_handle = open(output_file, 'w')
 
     with open(input_file, 'r') as file:
@@ -123,22 +134,20 @@ def process_xfen_file_in_batches(input_file, output_file, token_to_id, batch_siz
         for line in file:
             batch.append(line.strip())
             if len(batch) >= batch_size:
-                tokenized_batch = tokenize_batch(batch, token_to_id)
-                # Save or process the tokenized data
-                json.dump(tokenized_batch, output_handle)
-                output_handle.write('\n')  # New line for each batch
-                batch = []  # Reset the batch after processing
+                tokenized_batch = tokenize_batch(batch, token_to_id, inferrence=inferrence)
+                for tokenized_entry in tokenized_batch:
+                    output_handle.write(json.dumps(tokenized_entry) + '\n')
+                batch = []
 
-        if batch:  # Process the last batch if it's not empty
+        if batch:
             tokenized_batch = tokenize_batch(batch, token_to_id)
-            json.dump(tokenized_batch, output_handle)
-            output_handle.write('\n')
+            for tokenized_entry in tokenized_batch:
+                output_handle.write(json.dumps(tokenized_entry) + '\n')
 
     output_handle.close()
 
-
-# Tokenize a file
-input_file = 'tmp/output_xfen.csv'
-output_file = 'tmp/tokenized_xfen.txt'
-token_to_id = load_token_mapping(all_tokens_file)
-process_xfen_file_in_batches(input_file, output_file, token_to_id, batch_size=10)
+# # Tokenize a file
+# input_file = 'tmp/output_xfen.csv'
+# output_file = 'tmp/tokenized_xfen.txt'
+# token_to_id = load_token_mapping(all_tokens_file)
+# process_xfen_file_in_batches(input_file, output_file, token_to_id, batch_size=1000)

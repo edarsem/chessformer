@@ -12,21 +12,20 @@ class ChessModel(nn.Module):
         self.transformer_decoder = nn.TransformerEncoder(self.decoder_layer, num_layers=num_layers)
         
         self.next_move = nn.Linear(d_model, num_classes)
-    
-    def forward(self, sequence_tokens, square_tokens, meta_lengths):
-        # Embeddings for combined and squares
-        combined_embeddings = self.embedding(sequence_tokens)
-        square_embeddings = self.embedding(square_tokens)
 
-        # Adjust square embeddings by meta_lengths
-        for i, length in enumerate(meta_lengths):
-            if length > 0:
-                square_embeddings[i, :length] = square_embeddings[i, :length] + combined_embeddings[i, :length]
+    def forward(self, sequence_tokens, squares_tokens):
+        # Embeddings
+        sequence_embeddings = self.embedding(sequence_tokens)
+        squares_embeddings = self.embedding(squares_tokens)
         
+        # Combine sequence and squares embeddings
+        sequence_embeddings = sequence_embeddings + squares_embeddings
+
+
         # Compute mask for padding
         pad_mask = (sequence_tokens == -1)
         
-        x = self.transformer_decoder(combined_embeddings, src_key_padding_mask=pad_mask)
+        x = self.transformer_decoder(sequence_embeddings, src_key_padding_mask=pad_mask)
         first_token_output = self.next_move(x[:, 0, :]) # play_w or play_b token used for next move prediction
 
         return first_token_output

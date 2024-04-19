@@ -24,12 +24,11 @@ def train(model, data_loader, device, epochs=2, max_steps=1e4):
                 break
             
             sequence_tokens = batch['sequence_tokens'].to(device)
-            square_tokens = batch['square_tokens'].to(device)
-            meta_lengths = batch['meta_lengths'].to(device)
+            squares_tokens = batch['squares_tokens'].to(device)
             next_move = batch['next_move'].to(device)
 
             optimizer.zero_grad()
-            output = model(sequence_tokens, square_tokens, meta_lengths)
+            output = model(sequence_tokens, squares_tokens)
             loss = criterion(output, next_move)
             loss.backward()
             optimizer.step()

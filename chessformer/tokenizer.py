@@ -43,45 +43,34 @@ def tokenize_xfen(xfen_row, token_to_id, inferrence=False):
     for rank_index, row in enumerate(board.split('/')):
         file_index = 0
         for char in row:
-            if char.isdigit():  # This is a count of empty squares
+            if char.isdigit():
                 file_index += int(char)
-            elif char.isalpha():  # This is a chess piece
+            elif char.isalpha():
                 square_index = f"{chr(97 + file_index)}{8 - rank_index}"
-                pieces_tokens.append(token_to_id[char])  # Token for the piece
-                squares_tokens.append(token_to_id[square_index])  # Token for the square
+                pieces_tokens.append(token_to_id[char])
+                squares_tokens.append(token_to_id[square_index])
                 file_index += 1
 
-    # Player to move
     to_move = [token_to_id[f'play_{turn}']]
-
-    # Tokenize castling rights
     castling_tokens = [
-        token_to_id['w_k'] if 'K' in castling else None,
+            token_to_id['w_k'] if 'K' in castling else None,
             token_to_id['w_q'] if 'Q' in castling else None,
             token_to_id['b_k'] if 'k' in castling else None,
             token_to_id['b_q'] if 'q' in castling else None
         ]
     castling_tokens = [token for token in castling_tokens if token is not None]
-
-    # Tokenize en passant square
     en_passant_tokens = [token_to_id['ep_' + en_passant[0]]] if en_passant != '-' else []
-
-    # Tokenize Elo ratings
     elo_token = [token_to_id[get_elo_token(white_elo)] if turn == 'w' else token_to_id[get_elo_token(black_elo)]]    
-    # Tokenize time control
     time_control_token = [token_to_id[time_control]]
     
-    # Combine all meta tokens
     meta_tokens = to_move + elo_token + time_control_token + castling_tokens + en_passant_tokens
 
     if inferrence:
         return meta_tokens, pieces_tokens, squares_tokens, None
 
-    # Tokenize next move
     from_square, to_square = next_move[:2], next_move[2:4]
     move_tokens = [token_to_id[f'f_{from_square}'], token_to_id[f't_{to_square}']]
     
-    # Handle promotions, if any
     if len(next_move) > 4:
         promotion_piece = 'promote_' + next_move[-1].lower()
         move_tokens.append(token_to_id[promotion_piece])

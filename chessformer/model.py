@@ -1,12 +1,14 @@
 import torch.nn as nn
 
 class ChessModel(nn.Module):
-    def __init__(self, num_classes=132, d_model=64, nhead=4, num_layers=4, dropout=0.1):
+    def __init__(self, num_tokens=257, num_classes=132, d_model=64, nhead=4, num_layers=4, dropout=0.1):
         super().__init__()
+        self.num_tokens = num_tokens
         self.num_classes = num_classes
+        self.first_class_token = 125
         self.d_model = d_model
         
-        self.embedding = nn.Embedding(num_classes, d_model, padding_idx=-1)
+        self.embedding = nn.Embedding(1 + num_tokens, d_model, padding_idx=-1)
         
         self.decoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout, batch_first=True)
         self.transformer_decoder = nn.TransformerEncoder(self.decoder_layer, num_layers=num_layers)

@@ -7,6 +7,7 @@ from torch.nn import CrossEntropyLoss
 
 from dataset import ChessDataset, collate_fn
 from model import ChessModel
+from tokenizer import load_token_mapping
 
 def train(model, data_loader, device, epochs=2, max_steps=1e4):
     model.train()
@@ -29,7 +30,7 @@ def train(model, data_loader, device, epochs=2, max_steps=1e4):
 
             optimizer.zero_grad()
             output = model(sequence_tokens, squares_tokens)
-            loss = criterion(output, next_move)
+            loss = criterion(output, next_move - model.first_class_token)
             loss.backward()
             optimizer.step()
             print(f'Epoch {epoch+1}, Step {steps+1}, Loss: {loss.item():.4f}')
@@ -38,10 +39,13 @@ def train(model, data_loader, device, epochs=2, max_steps=1e4):
     print(f'Time per epoch: {(time.time() - time_start) / epochs:.2f} seconds')
 
 if __name__ == "__main__":
+    token_to_id = load_token_mapping('tmp/token_to_id.json')
+    num_tokens = len(token_to_id)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     
     dataset = ChessDataset('tmp/tokenized_xfen.txt')
     data_loader = DataLoader(dataset, batch_size=1024, shuffle=True, collate_fn=collate_fn)
     
-    model = ChessModel()
+    model = ChessModel(num_tokens=num_tokens)
     train(model, data_loader, device, epochs=2)

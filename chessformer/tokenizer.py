@@ -1,7 +1,5 @@
 import json
 
-all_tokens_file = 'tmp/token_to_id.json'
-
 def create_token_mapping(file):
     # Define the range of Elos and other categories
     elo_ranges = list(range(800, 3401, 100)) + ['weak', 'strong', 'unknown']
@@ -104,7 +102,7 @@ def tokenize_file(input_file, output_file, token_to_id):
     with open(output_file, 'w') as f:
         f.write('\n'.join(tokenized_data))
 
-def load_token_mapping(file=all_tokens_file):
+def load_token_mapping(file):
     with open(file, 'r') as f:
         token_to_id = json.load(f)
     return token_to_id
@@ -134,9 +132,3 @@ def process_xfen_file_in_batches(input_file, output_file, token_to_id, batch_siz
                 output_handle.write(json.dumps(tokenized_entry) + '\n')
 
     output_handle.close()
-
-# # Tokenize a file
-# input_file = 'tmp/output_xfen.csv'
-# output_file = 'tmp/tokenized_xfen.txt'
-# token_to_id = load_token_mapping(all_tokens_file)
-# process_xfen_file_in_batches(input_file, output_file, token_to_id, batch_size=1000)

@@ -2,7 +2,6 @@
 # <FEN position> <Next move> <White Elo> <Black Elo> <Time control>
 
 import chess.pgn
-import pandas as pd
 
 def classify_time_control(time_control):
     if time_control == "-" or not time_control:
@@ -48,10 +47,3 @@ def parse_pgn_to_xfen(pgn_file):
             board.push(move)
     
     return games
-
-
-
-pgn_path = 'data/raw_pgn/lichess_tournament_2024.04.18_NCKOMuSh_1700-rapid.pgn'
-xfen_records = parse_pgn_to_xfen(pgn_path)
-xfen_df = pd.DataFrame(xfen_records)
-xfen_df.to_csv('tmp/output_xfen.csv', index=False, header=False)

@@ -1,6 +1,17 @@
 import torch.nn as nn
 
 class ChessModel(nn.Module):
+    """
+    Transformer-based model for predicting chess moves.
+
+    Args:
+        num_tokens (int): Number of unique tokens.
+        num_classes (int): Number of output classes.
+        d_model (int): Dimensionality of the model.
+        nhead (int): Number of attention heads.
+        num_layers (int): Number of transformer layers.
+        dropout (float): Dropout rate.
+    """
     def __init__(self, num_tokens=257, num_classes=132, d_model=64, nhead=4, num_layers=4, dropout=0.1):
         super().__init__()
         self.num_tokens = num_tokens
@@ -16,6 +27,16 @@ class ChessModel(nn.Module):
         self.next_move = nn.Linear(d_model, num_classes)
 
     def forward(self, sequence_tokens, squares_tokens):
+        """
+        Forward pass of the model.
+
+        Args:
+            sequence_tokens (Tensor): Tensor containing the sequence tokens.
+            squares_tokens (Tensor): Tensor containing the squares tokens.
+
+        Returns:
+            Tensor: The output logits for the next move prediction.
+        """
         # Embeddings
         sequence_embeddings = self.embedding(sequence_tokens)
         squares_embeddings = self.embedding(squares_tokens)

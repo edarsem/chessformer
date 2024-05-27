@@ -22,7 +22,7 @@ MODEL_PARAMS = {
 # Training configuration
 TRAINING_PARAMS = {
     'batch_size': 1024,
-    'max_steps': 10000,
+    'max_steps': 100,
     'learning_rate': 1e-3
 }
 

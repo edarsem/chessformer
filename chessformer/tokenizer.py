@@ -1,6 +1,12 @@
 import json
 
 def create_token_mapping(file):
+    """
+    Create a mapping from tokens to unique IDs and save to a file.
+
+    Args:
+        file (str): The file path to save the token mapping.
+    """
     # Define the range of Elos and other categories
     elo_ranges = list(range(800, 3401, 100)) + ['weak', 'strong', 'unknown']
     time_controls = ['bullet', 'blitz', 'rapid', 'classical', 'unknown_time']
@@ -29,7 +35,16 @@ def tokenize_xfen(xfen_row, token_to_id, inferrence=False):
     Tokenize an extended FEN row.
     The 2 first elements are the number of tokens dedicated to the next move and the number of pieces on the board.
     Maximum 42 tokens as input for a position (1 for the player to move, 1 for the Elo, 1 for the player id if any, 1 for the time control, 4 for castling rights, 1 for en passant, 32 for the board, and 2 to 3 for the move itself but it can't be 3 if there are 32 pieces left and minus 1 because the token in prediction is not as input).
-    Inferrence mode when the next move is not available."""
+    Inferrence mode when the next move is not available
+
+    Args:
+        xfen_row (str): The XFEN row to tokenize.
+        token_to_id (dict): Dictionary mapping tokens to IDs.
+        inferrence (bool): Whether the function is used for inference.
+
+    Returns:
+        tuple: Tokens for meta, pieces, squares, and next move (if not inference).
+    """
     fen, next_move, white_elo, black_elo, time_control = xfen_row.split(',')
 
     # Parse the FEN part
@@ -80,6 +95,7 @@ def tokenize_xfen(xfen_row, token_to_id, inferrence=False):
     return res
 
 def get_elo_token(elo):
+    
     if elo.lower() == 'unknown':
         return "elo_unknown"
     elo = int(elo)
@@ -108,6 +124,17 @@ def load_token_mapping(file):
     return token_to_id
 
 def tokenize_batch(batch, token_to_id, inferrence=False):
+    """
+Tokenize a batch of XFEN rows.
+
+            Args:
+        batch (list): List of XFEN rows.
+        token_to_id (dict): Dictionary mapping tokens to IDs.
+        inferrence (bool): Whether the function is used for inference.
+
+    Returns:
+        list: List of tokenized XFEN rows.
+    """
     if inferrence:
         return [tokenize_xfen(xfen_row, token_to_id, inferrence) for xfen_row in batch]
     # else, we need to loop over the result which is a list instead of one element

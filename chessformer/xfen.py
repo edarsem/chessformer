@@ -4,6 +4,15 @@
 import chess.pgn
 
 def classify_time_control(time_control):
+    """
+    Classify the time control of a chess game.
+
+    Args:
+        time_control (str): The time control string from the PGN headers.
+
+    Returns:
+        str: The classified time control (bullet, blitz, rapid, classical, unknown).
+    """
     if time_control == "-" or not time_control:
         return "Unknown"
     elif '+' in time_control:
@@ -22,6 +31,15 @@ def classify_time_control(time_control):
         return "classical"
 
 def parse_pgn_to_xfen(pgn_file):
+    """
+    Parse PGN file to extract XFEN data.
+
+    Args:
+        pgn_file (str): Path to the PGN file.
+
+    Returns:
+        list: A list of dictionaries containing XFEN data.
+    """
     pgn = open(pgn_file, 'r')
     games = []
 

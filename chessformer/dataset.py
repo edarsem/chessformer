@@ -4,6 +4,12 @@ from torch.nn.utils.rnn import pad_sequence
 import json
 
 class ChessDataset(Dataset):
+    """
+    Chess dataset for loading and processing chess game data.
+
+    Args:
+        file_path (str): Path to the file containing tokenized data.
+    """
     def __init__(self, file_path):
         with open(file_path, 'r') as file:
             self.data = [json.loads(line) for line in file]
@@ -23,6 +29,15 @@ class ChessDataset(Dataset):
         }
 
 def collate_fn(batch):
+    """
+    Collate function for the DataLoader to handle variable-length sequences.
+
+    Args:
+        batch (list): A batch of data.
+
+    Returns:
+        dict: A dictionary containing padded sequences and next moves.
+    """
     sequence_tokens = [item['sequence_tokens'] for item in batch]
     squares_tokens = [item['squares_tokens'] for item in batch]
     next_moves = [item['next_move'] for item in batch]

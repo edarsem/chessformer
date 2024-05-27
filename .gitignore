@@ -4,3 +4,4 @@ __pycache__/
 data/
 tmp/
 chessformer_old/
+.DS_Store

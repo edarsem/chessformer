@@ -8,12 +8,11 @@ I suspect that it could also be used as a cheating detection tool as it would ha
 
 Finally, I hope that I can use those models to imitate a specific player style.
 
-I will try to achieve this by trainnig a transformer neural network from scratch.
+I will try to achieve this by training a transformer neural network from scratch.
 
 More specifically, as transformer models are naturally suited to sets, not for sequences, I will ask the model to predict the move of the position given a set of pieces representing the chess board and the level of the player to make a move.
 
 I don't intend to give the model the rules of chess.
-
 
 Here is an outline and more details about this personal project
 
@@ -31,6 +30,7 @@ I already have several data formats that I will need to handle, so I will need t
 I will make files with many FEN and then use this to have train, test and val sets for both of pgn and puzzles data (to allow ablation studies and fine-grained analysis).
 
 Then I will send these to a tokenizer. This tokenizer will have tokens for
+
 - whose player it is to play
 - Each piece (white and black)
 - Each square on the board

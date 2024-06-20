@@ -3,5 +3,5 @@ __pycache__/
 *.pyc
 data/
 tmp/
-chessformer_old/
 .DS_Store
+chessformer/play.ipynb

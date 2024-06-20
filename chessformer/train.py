@@ -9,10 +9,10 @@ from model import ChessModel
 
 from config import DEVICE, TRAINING_PARAMS, MODEL_PARAMS, TOKENIZED_XFEN_FILE
 
-def train(model, data_loader, device, epochs=2, max_steps=1e4):
+def train(model, data_loader, device, epochs=2, max_steps=1e4, lr=1e-3):
     model.train()
     model.to(device)
-    optimizer = Adam(model.parameters(), lr=1e-3)
+    optimizer = Adam(model.parameters(), lr=lr)
     criterion = CrossEntropyLoss()
     time_start = time.time()
 
@@ -23,7 +23,8 @@ def train(model, data_loader, device, epochs=2, max_steps=1e4):
             if steps >= max_steps:
                 print(f'Training completed: Maximum steps reached ({max_steps} steps)')
                 break
-            
+            t0 = time.time()
+
             sequence_tokens = batch['sequence_tokens'].to(device)
             squares_tokens = batch['squares_tokens'].to(device)
             next_move = batch['next_move'].to(device)
@@ -33,7 +34,10 @@ def train(model, data_loader, device, epochs=2, max_steps=1e4):
             loss = criterion(output, next_move - model.first_class_token)
             loss.backward()
             optimizer.step()
-            print(f'Epoch {epoch+1}, Step {steps+1}, Loss: {loss.item():.4f}')
+
+            dt = time.time() - t0
+            tokens_per_sec = sequence_tokens.size(0) / dt
+            print(f'Epoch {epoch+1:4d} | Step {steps+1:4d} | Loss: {loss.item():.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}')
             steps += 1
 
     print(f'Time per epoch: {(time.time() - time_start) / epochs:.2f} seconds')
@@ -56,4 +60,4 @@ if __name__ == "__main__":
         dropout=MODEL_PARAMS['dropout']
         )
     
-    train(model, data_loader, DEVICE, 2, TRAINING_PARAMS['max_steps'])
+    train(model, data_loader, DEVICE, 2, TRAINING_PARAMS['max_steps'], TRAINING_PARAMS['learning_rate'])

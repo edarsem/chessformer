@@ -21,8 +21,8 @@ class ChessModel(nn.Module):
         
         self.embedding = nn.Embedding(1 + num_tokens, d_model, padding_idx=-1)
         
-        self.decoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout, batch_first=True)
-        self.transformer_decoder = nn.TransformerEncoder(self.decoder_layer, num_layers=num_layers)
+        self.encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
         
         self.next_move = nn.Linear(d_model, num_classes)
 
@@ -37,18 +37,13 @@ class ChessModel(nn.Module):
         Returns:
             Tensor: The output logits for the next move prediction.
         """
-        # Embeddings
-        sequence_embeddings = self.embedding(sequence_tokens)
-        squares_embeddings = self.embedding(squares_tokens)
-        
         # Combine sequence and squares embeddings
-        sequence_embeddings = sequence_embeddings + squares_embeddings
-
+        x = self.embedding(sequence_tokens) + self.embedding(squares_tokens)
 
         # Compute mask for padding
         pad_mask = (sequence_tokens == -1)
         
-        x = self.transformer_decoder(sequence_embeddings, src_key_padding_mask=pad_mask)
+        x = self.transformer_encoder(x, src_key_padding_mask=pad_mask)
         first_token_output = self.next_move(x[:, 0, :]) # play_w or play_b token used for next move prediction
 
         return first_token_output

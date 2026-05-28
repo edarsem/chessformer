@@ -1,0 +1,15 @@
+defaults:
+  - model: small
+  - data: local
+  - train: default
+  - _self_
+
+paths:
+  data_dir: data
+  checkpoints_dir: checkpoints
+  processed_dir: ${paths.data_dir}/processed
+
+wandb:
+  project: chessformer
+  entity: null   # override via env WANDB_ENTITY or CLI
+  enabled: true

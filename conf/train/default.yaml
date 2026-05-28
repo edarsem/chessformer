@@ -1,0 +1,20 @@
+batch_size: 256
+max_steps: 50000
+lr: 1e-3
+warmup_steps: 1000
+lr_schedule: cosine   # cosine | constant
+weight_decay: 0.01
+grad_clip: 1.0
+
+# Validation and checkpointing
+val_every: 500         # steps
+checkpoint_every: 2000 # steps
+
+# Mixed precision (autocast). GradScaler only activates on CUDA.
+mixed_precision: true
+
+# Distributed training (activated via torchrun, not set here)
+# torchrun --nproc_per_node=N scripts/train.py
+
+# Resume from checkpoint (null = start fresh)
+resume_from: null

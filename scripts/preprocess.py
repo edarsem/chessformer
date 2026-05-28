@@ -166,14 +166,17 @@ class ParquetBatchWriter:
 # Elo bucket helpers
 # ---------------------------------------------------------------------------
 
-ELO_BUCKET_RANGE = list(range(800, 3001, 100))  # [800, 900, ..., 3000]
+ELO_BUCKET_RANGE = list(range(1000, 2901, 100))  # [1000, 1100, ..., 2900] — 20 buckets
 
 
 def _elo_bucket_for_game(avg_elo: int) -> int | None:
-    """Return the bucket lower bound (e.g. 1500) if avg_elo falls in [800, 3100), else None."""
-    if avg_elo < 800 or avg_elo >= 3100:
+    """Return the bucket lower bound if avg_elo falls within ELO_BUCKET_RANGE, else None."""
+    bucket = (avg_elo // 100) * 100
+    if bucket not in _BUCKET_SET:
         return None
-    return (avg_elo // 100) * 100
+    return bucket
+
+_BUCKET_SET = set(ELO_BUCKET_RANGE)
 
 
 # ---------------------------------------------------------------------------
@@ -217,18 +220,24 @@ def process_valtest(
     pgn_path: str,
     out_path: str,
     vocab: Vocab,
-    games_per_bucket: int,
+    max_games: int,
     elo_spread_max: int,
 ) -> None:
-    print(f"[valtest] source        : {pgn_path}")
-    print(f"[valtest] per bucket    : {games_per_bucket} games")
-    print(f"[valtest] spread max    : ±{elo_spread_max} Elo")
-    print(f"[valtest] buckets       : {ELO_BUCKET_RANGE[0]}..{ELO_BUCKET_RANGE[-1]}")
-    print(f"[valtest] output        : {out_path}")
+    """
+    Collect up to max_games qualifying games from pgn_path and write them.
+    Qualifying = avg(white_elo, black_elo) in ELO_BUCKET_RANGE and
+    |white_elo - black_elo| <= elo_spread_max.
 
-    # Track how many games we've collected per bucket
-    bucket_counts: dict[int, int] = {b: 0 for b in ELO_BUCKET_RANGE}
-    n_buckets = len(ELO_BUCKET_RANGE)
+    No attempt to balance across buckets — just take the first max_games
+    qualifying games. The natural Elo distribution of the source file is
+    preserved. Per-bucket eval breakdown is done at eval time on whatever
+    distribution we get.
+    """
+    print(f"[valtest] source     : {pgn_path}")
+    print(f"[valtest] max games  : {max_games:,}")
+    print(f"[valtest] elo range  : {ELO_BUCKET_RANGE[0]}–{ELO_BUCKET_RANGE[-1]}")
+    print(f"[valtest] spread max : ±{elo_spread_max} Elo")
+    print(f"[valtest] output     : {out_path}")
 
     writer = ParquetBatchWriter(out_path, GAMES_SCHEMA)
     t0 = time.time()
@@ -236,9 +245,100 @@ def process_valtest(
 
     for positions, w_elo, b_elo in iter_pgn_games_with_elos(pgn_path, vocab):
         n_seen += 1
+        if n_written >= max_games:
+            break
 
-        # Check if all buckets are full
-        if all(c >= games_per_bucket for c in bucket_counts.values()):
+        if w_elo < 0 or b_elo < 0:
+            continue
+        if abs(w_elo - b_elo) > elo_spread_max:
+            continue
+
+        avg_elo = (w_elo + b_elo) // 2
+        if _elo_bucket_for_game(avg_elo) is None:
+            continue
+
+        spread = abs(w_elo - b_elo)
+        for pos in positions:
+            writer.write(pos_to_game_row(pos, avg_elo, spread))
+        n_written += 1
+
+        if n_written % 1_000 == 0:
+            elapsed = time.time() - t0
+            print(f"  {n_written:,} / {max_games:,} games  (seen {n_seen:,}, {n_written/elapsed:.0f} games/s)", flush=True)
+
+    total = writer.close()
+    elapsed = time.time() - t0
+    print(f"[valtest] done: {n_written:,} games, {total:,} positions in {elapsed:.1f}s  (scanned {n_seen:,})")
+
+
+def process_test_plain(
+    pgn_path: str,
+    out_path: str,
+    vocab: Vocab,
+    max_games: int,
+) -> None:
+    """First max_games games with valid Elo from pgn_path. No Elo range restriction."""
+    print(f"[test_plain] source   : {pgn_path}")
+    print(f"[test_plain] max games: {max_games:,}")
+    print(f"[test_plain] output   : {out_path}")
+
+    writer = ParquetBatchWriter(out_path, GAMES_SCHEMA)
+    t0 = time.time()
+    n_seen = n_written = 0
+
+    for positions, w_elo, b_elo in iter_pgn_games_with_elos(pgn_path, vocab):
+        n_seen += 1
+        if n_written >= max_games:
+            break
+        if w_elo < 0 or b_elo < 0:
+            continue
+        avg_elo = (w_elo + b_elo) // 2
+        spread = abs(w_elo - b_elo)
+        for pos in positions:
+            writer.write(pos_to_game_row(pos, avg_elo, spread))
+        n_written += 1
+        if n_written % 1_000 == 0:
+            elapsed = time.time() - t0
+            print(f"  {n_written:,} / {max_games:,} games  (seen {n_seen:,}, {n_written/elapsed:.0f} games/s)", flush=True)
+
+    total = writer.close()
+    elapsed = time.time() - t0
+    print(f"[test_plain] done: {n_written:,} games, {total:,} positions in {elapsed:.1f}s  (scanned {n_seen:,})")
+
+
+def process_test_elo(
+    pgn_path: str,
+    out_path: str,
+    vocab: Vocab,
+    skip_games: int,
+    scan_games: int,
+    games_per_bucket: int,
+    elo_spread_max: int,
+) -> None:
+    """
+    Collect up to games_per_bucket qualifying games per Elo bucket.
+    Skips the first skip_games games to avoid overlap with test_plain.
+    Stops when all buckets are full OR scan_games have been scanned.
+    """
+    print(f"[test_elo] source         : {pgn_path}")
+    print(f"[test_elo] skip games     : {skip_games:,}")
+    print(f"[test_elo] scan limit     : {scan_games:,}")
+    print(f"[test_elo] games/bucket   : {games_per_bucket}")
+    print(f"[test_elo] elo range      : {ELO_BUCKET_RANGE[0]}–{ELO_BUCKET_RANGE[-1]}")
+    print(f"[test_elo] spread max     : ±{elo_spread_max} Elo")
+    print(f"[test_elo] output         : {out_path}")
+
+    writer = ParquetBatchWriter(out_path, GAMES_SCHEMA)
+    t0 = time.time()
+    n_scanned = n_written = 0
+    bucket_counts: dict[int, int] = {b: 0 for b in ELO_BUCKET_RANGE}
+    n_buckets = len(ELO_BUCKET_RANGE)
+
+    for positions, w_elo, b_elo in iter_pgn_games_with_elos(pgn_path, vocab, skip_games=skip_games):
+        n_scanned += 1
+        if n_scanned > scan_games:
+            break
+        if sum(c >= games_per_bucket for c in bucket_counts.values()) == n_buckets:
             break
 
         if w_elo < 0 or b_elo < 0:
@@ -259,24 +359,15 @@ def process_valtest(
         bucket_counts[bucket] += 1
         n_written += 1
 
-        if n_seen % 50_000 == 0:
-            filled = sum(1 for c in bucket_counts.values() if c >= games_per_bucket)
-            print(
-                f"  seen {n_seen:,} | written {n_written:,} games | "
-                f"{filled}/{n_buckets} buckets full",
-                flush=True,
-            )
+        if n_written % 500 == 0:
+            elapsed = time.time() - t0
+            full = sum(c >= games_per_bucket for c in bucket_counts.values())
+            print(f"  {n_written:,} games written  ({full}/{n_buckets} buckets full, scanned {n_scanned:,}, {n_written/elapsed:.0f} games/s)", flush=True)
 
     total = writer.close()
     elapsed = time.time() - t0
-
-    print(f"[valtest] done: {n_written:,} games, {total:,} positions in {elapsed:.1f}s")
-    print("[valtest] bucket fill:")
-    for bucket in ELO_BUCKET_RANGE:
-        c = bucket_counts[bucket]
-        bar = "█" * (c * 20 // max(games_per_bucket, 1))
-        status = "✓" if c >= games_per_bucket else f"{c}"
-        print(f"  elo_{bucket:4d}: {bar:<20} {status}")
+    full = sum(c >= games_per_bucket for c in bucket_counts.values())
+    print(f"[test_elo] done: {n_written:,} games, {total:,} positions in {elapsed:.1f}s  (scanned {n_scanned:,}, {full}/{n_buckets} buckets full)")
 
 
 def process_puzzles(
@@ -333,7 +424,26 @@ def main(cfg: DictConfig) -> None:
             pgn_path=cfg.data.valtest_pgn_source,
             out_path=os.path.join(processed_dir, "all_games_valtest.parquet"),
             vocab=vocab,
-            games_per_bucket=cfg.data.valtest_games_per_elo_bucket,
+            max_games=cfg.data.valtest_games,
+            elo_spread_max=cfg.data.get("elo_spread_max", 200),
+        )
+
+    if mode in ("test_plain", "all"):
+        process_test_plain(
+            pgn_path=cfg.data.valtest_pgn_source,
+            out_path=os.path.join(processed_dir, "test_games.parquet"),
+            vocab=vocab,
+            max_games=cfg.data.get("test_plain_games", 10000),
+        )
+
+    if mode in ("test_elo", "all"):
+        process_test_elo(
+            pgn_path=cfg.data.valtest_pgn_source,
+            out_path=os.path.join(processed_dir, "test_games_elo.parquet"),
+            vocab=vocab,
+            skip_games=cfg.data.get("test_elo_skip_games", 10000),
+            scan_games=cfg.data.get("test_elo_scan_games", 200000),
+            games_per_bucket=cfg.data.get("test_elo_games_per_bucket", 500),
             elo_spread_max=cfg.data.get("elo_spread_max", 200),
         )
 

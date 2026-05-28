@@ -1,31 +1,27 @@
 """
 scripts/make_splits.py
 
-Produce final train/val/test parquets from the outputs of preprocess.py.
+Produce final train/val parquets from the outputs of preprocess.py.
+Test sets are written directly by preprocess.py (test_games, test_games_elo).
 
 Inputs:
-  processed/all_games_train.parquet   → sampled → train_games_{size}.parquet
-  processed/all_games_valtest.parquet → split by game_id hash → val_games.parquet
-                                                                  test_games.parquet
+  processed/all_games_train.parquet   → sampled → train_games_tiny.parquet
+                                                   train_games_small.parquet
+  processed/all_games_valtest.parquet → sampled → val_games.parquet
   processed/all_puzzles.parquet       → split by puzzle_id hash → val_puzzles.parquet
                                                                     test_puzzles.parquet
 
 Train subsets:
-  Two train files are always produced from all_games_train.parquet:
+  Two train files from all_games_train.parquet (random game sampling, split_seed):
     train_games_tiny.parquet  — cfg.data.train_games_tiny games (smoke tests)
     train_games_small.parquet — cfg.data.train_games_small games (local runs)
 
-  These are produced by random game sampling (with cfg.data.split_seed).
-  All positions from a sampled game are included.
+Val games:
+  Random sample of cfg.data.valtest_games games from all_games_valtest.parquet.
 
-Val/test split (games):
-  hash(game_id, seed) % 2: 0 → val, 1 → test.
-  The valtest parquet is already Elo-balanced (from preprocess.py), so the
-  50/50 hash split naturally produces balanced val and test sets.
-
-Val/test split (puzzles):
+Val/test puzzles:
   hash(puzzle_id, seed) % 2: 0 → val, 1 → test.
-  Then subsampled to cfg.data.val_puzzles and cfg.data.test_puzzles total.
+  Then subsampled to cfg.data.val_puzzles / cfg.data.test_puzzles.
 
 Usage:
     python scripts/make_splits.py          # local config
@@ -58,22 +54,6 @@ def _sample_games(df: pl.DataFrame, n_games: int, seed: int) -> pl.DataFrame:
     sampled = unique_ids.sample(n=n_games, seed=seed)
     return df.join(sampled.to_frame("game_id"), on="game_id", how="inner")
 
-
-def _hash_split_games(
-    df: pl.DataFrame, seed: int
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Split game positions into val/test by hashing game_id."""
-    unique_ids = df["game_id"].unique().to_list()
-    val_ids = set(gid for gid in unique_ids if _hash_mod(gid, seed, 2) == 0)
-
-    split_col = df["game_id"].map_elements(
-        lambda gid: "val" if gid in val_ids else "test",
-        return_dtype=pl.Utf8,
-    )
-    df = df.with_columns(split_col.alias("_split"))
-    val  = df.filter(pl.col("_split") == "val").drop("_split")
-    test = df.filter(pl.col("_split") == "test").drop("_split")
-    return val, test
 
 
 def _hash_split_puzzles(
@@ -149,24 +129,16 @@ def main(cfg: DictConfig) -> None:
         df.write_parquet(out, compression="snappy")
         print(f"  train_{label}: {df['game_id'].n_unique():,} games / {len(df):,} positions → {out}")
 
-    # --- Val / Test (games) ----------------------------------------------
+    # --- Val (games) -----------------------------------------------------
     print("\nReading all_games_valtest.parquet …")
     valtest = pl.read_parquet(valtest_src)
     print(f"  {valtest['game_id'].n_unique():,} games / {len(valtest):,} positions")
 
-    val_g, test_g = _hash_split_games(valtest, seed)
-
-    for label, df, path_key in [
-        ("val",  val_g,  "val_games_file"),
-        ("test", test_g, "test_games_file"),
-    ]:
-        out = cfg.data[path_key]
-        df.write_parquet(out, compression="snappy")
-        n_games = df["game_id"].n_unique()
-        print(f"  {label}_games: {n_games:,} games / {len(df):,} positions → {out}")
-
-    _print_elo_distribution(val_g,  "game_id", "val")
-    _print_elo_distribution(test_g, "game_id", "test")
+    val_g = _sample_games(valtest, cfg.data.valtest_games, seed)
+    out = cfg.data["val_games_file"]
+    val_g.write_parquet(out, compression="snappy")
+    print(f"  val_games: {val_g['game_id'].n_unique():,} games / {len(val_g):,} positions → {out}")
+    _print_elo_distribution(val_g, "game_id", "val")
 
     # --- Val / Test (puzzles) --------------------------------------------
     print("\nReading all_puzzles.parquet …")
@@ -190,12 +162,13 @@ def main(cfg: DictConfig) -> None:
 
     # --- Summary ---------------------------------------------------------
     print("\n=== Split summary ===")
-    print(f"  train_tiny  : {_sample_games(train_all, tiny_games, seed)['game_id'].n_unique():,} games")
-    print(f"  train_small : {_sample_games(train_all, small_games, seed)['game_id'].n_unique():,} games")
-    print(f"  val_games   : {val_g['game_id'].n_unique():,} games")
-    print(f"  test_games  : {test_g['game_id'].n_unique():,} games")
-    print(f"  val_puzzles : {val_p['puzzle_id'].n_unique():,} puzzles")
-    print(f"  test_puzzles: {test_p['puzzle_id'].n_unique():,} puzzles")
+    print(f"  train_tiny   : {_sample_games(train_all, tiny_games, seed)['game_id'].n_unique():,} games")
+    print(f"  train_small  : {_sample_games(train_all, small_games, seed)['game_id'].n_unique():,} games")
+    print(f"  val_games    : {val_g['game_id'].n_unique():,} games")
+    print(f"  test_games   : written by preprocess.py (test_plain mode)")
+    print(f"  test_games_elo: written by preprocess.py (test_elo mode)")
+    print(f"  val_puzzles  : {val_p['puzzle_id'].n_unique():,} puzzles")
+    print(f"  test_puzzles : {test_p['puzzle_id'].n_unique():,} puzzles")
 
 
 if __name__ == "__main__":

@@ -87,17 +87,27 @@ def iter_pgn_games(
 def iter_pgn_games_with_elos(
     pgn_path: str,
     vocab: Vocab,
+    skip_games: int = 0,
 ) -> Iterator[tuple[list[PositionTokens], int, int]]:
     """
     Like iter_pgn_games but also yields (white_elo, black_elo) per game.
     Used by preprocess.py for Elo-based filtering.
     Yields (positions, white_elo, black_elo). Games with zero moves are skipped.
+
+    Args:
+        skip_games: Skip this many games at the start of the file (zero-move
+                    games count toward the skip). Useful for non-overlapping
+                    subsets of the same source file.
     """
+    skipped = 0
     with _open_pgn(pgn_path) as f:
         while True:
             game = chess.pgn.read_game(f)
             if game is None:
                 break
+            if skipped < skip_games:
+                skipped += 1
+                continue
             w_elo, b_elo = game_elos(game)
             positions = list(_game_positions(game, vocab))
             if positions:

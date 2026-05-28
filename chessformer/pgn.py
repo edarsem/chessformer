@@ -27,6 +27,8 @@ Themes, GameUrl, OpeningTags
 from __future__ import annotations
 
 import csv
+import io
+import os
 from typing import Iterator, Optional
 
 import chess
@@ -44,23 +46,76 @@ from chessformer.tokenizer import (
 # PGN streaming
 # ---------------------------------------------------------------------------
 
-def iter_pgn_positions(pgn_path: str, vocab: Vocab) -> Iterator[PositionTokens]:
-    """
-    Stream every position from a PGN file as PositionTokens.
+def _open_pgn(path: str):
+    """Open a PGN file, transparently decompressing .zst if needed."""
+    if path.endswith(".zst"):
+        import zstandard as zstd
+        fh = open(path, "rb")
+        dctx = zstd.ZstdDecompressor()
+        return io.TextIOWrapper(dctx.stream_reader(fh), encoding="utf-8", errors="replace")
+    return open(path, errors="replace")
 
-    Yields one PositionTokens per move in the game. Positions from games with
-    missing or unparseable Elo are yielded with elo=-1.
+
+def iter_pgn_games(
+    pgn_path: str,
+    vocab: Vocab,
+    max_games: int | None = None,
+) -> Iterator[list[PositionTokens]]:
+    """
+    Stream a PGN file game by game.
+
+    Yields one list[PositionTokens] per game (one entry per move).
+    Games with zero moves (e.g. forfeits before move 1) are skipped.
 
     Args:
-        pgn_path: Path to a PGN file (may contain multiple games).
+        pgn_path: Path to a PGN file.
         vocab: Vocab from build_vocab().
+        max_games: Stop after this many games. None = read entire file.
     """
-    with open(pgn_path, errors="replace") as f:
+    n = 0
+    with _open_pgn(pgn_path) as f:
+        while max_games is None or n < max_games:
+            game = chess.pgn.read_game(f)
+            if game is None:
+                break
+            positions = list(_game_positions(game, vocab))
+            if positions:
+                yield positions
+                n += 1
+
+
+def iter_pgn_games_with_elos(
+    pgn_path: str,
+    vocab: Vocab,
+) -> Iterator[tuple[list[PositionTokens], int, int]]:
+    """
+    Like iter_pgn_games but also yields (white_elo, black_elo) per game.
+    Used by preprocess.py for Elo-based filtering.
+    Yields (positions, white_elo, black_elo). Games with zero moves are skipped.
+    """
+    with _open_pgn(pgn_path) as f:
         while True:
             game = chess.pgn.read_game(f)
             if game is None:
                 break
-            yield from _game_positions(game, vocab)
+            w_elo, b_elo = game_elos(game)
+            positions = list(_game_positions(game, vocab))
+            if positions:
+                yield positions, w_elo, b_elo
+
+
+def iter_pgn_positions(pgn_path: str, vocab: Vocab) -> Iterator[PositionTokens]:
+    """
+    Stream every position from a PGN file as a flat sequence of PositionTokens.
+    Convenience wrapper around iter_pgn_games for when game boundaries don't matter.
+    """
+    for game_positions in iter_pgn_games(pgn_path, vocab):
+        yield from game_positions
+
+
+def game_elos(game: chess.pgn.Game) -> tuple[int, int]:
+    """Return (white_elo, black_elo) from game headers. -1 if missing/unparseable."""
+    return _parse_elo(game.headers.get("WhiteElo", "?")), _parse_elo(game.headers.get("BlackElo", "?"))
 
 
 def _game_positions(game: chess.pgn.Game, vocab: Vocab) -> Iterator[PositionTokens]:
@@ -107,11 +162,11 @@ def iter_puzzle_positions(
     vocab: Vocab,
     rating_min: Optional[int] = None,
     rating_max: Optional[int] = None,
-) -> Iterator[list[PositionTokens]]:
+) -> Iterator[tuple[list[PositionTokens], int]]:
     """
     Stream puzzles from a Lichess puzzle CSV.
 
-    Yields one list[PositionTokens] per puzzle. Each list represents the full
+    Yields (list[PositionTokens], puzzle_rating) per puzzle. Each list represents the full
     puzzle sequence:
       - Solver moves have uci_move set (these are predicted / evaluated).
       - Opponent moves have uci_move=None (teacher-forced at eval time).
@@ -149,7 +204,7 @@ def iter_puzzle_positions(
                 puzzle_rating=rating,
             )
             if positions:
-                yield positions
+                yield positions, rating
 
 
 def _puzzle_positions(

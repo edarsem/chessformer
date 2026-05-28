@@ -6,3 +6,4 @@ tmp/
 .DS_Store
 chessformer/play.ipynb
 CLAUDE.md
+outputs/

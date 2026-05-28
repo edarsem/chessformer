@@ -1,161 +1,353 @@
-import json
+"""
+chessformer/tokenizer.py
 
-def create_token_mapping(file):
+Vocabulary and position tokenization.
+
+The vocab is defined entirely in code — no JSON file. Call build_vocab() once at
+startup and pass the resulting Vocab everywhere.
+
+Board representation
+--------------------
+Each piece gets a single sequence slot. Its embedding in the model is the sum of
+four independent lookups:
+    emb[color] + emb[piece_type] + emb[file] + emb[rank]
+
+This lets the model generalize independently over colors, piece types, files, and
+ranks (e.g. "rooks on the d-file" without that being a single opaque token).
+
+Elo and clock conditioning
+--------------------------
+Both are stored as raw scalars (int and float). The model embeds them with soft
+interpolation between the two nearest bracket embeddings:
+    alpha * emb[lower_bracket] + (1 - alpha) * emb[upper_bracket]
+See elo_blend_weights() and clock_blend_weights() for the weight computation.
+These are called inside the model's embedding layer, not here.
+
+Move representation
+-------------------
+Moves are autoregressive: from-square → to-square → promotion (if any).
+At training time this is done in one forward pass with causal masking.
+tokenize_position() returns the from/to/promo IDs as separate targets.
+"""
+
+from __future__ import annotations
+
+import bisect
+from dataclasses import dataclass, field
+from typing import Optional
+
+import chess
+
+
+# ---------------------------------------------------------------------------
+# Vocab constants
+# ---------------------------------------------------------------------------
+
+# Elo brackets: 0, 100, ..., 3400. Store raw int for soft blending at runtime.
+ELO_BRACKETS: list[int] = list(range(0, 3401, 100))  # 35 values
+
+# Clock brackets in seconds. Finer resolution under 30s where time pressure
+# most affects move quality. Max 10800s (3h) covers classical time controls.
+CLOCK_BRACKETS_S: list[float] = [
+    0, 5, 10, 20, 30, 60, 120, 180, 300, 600, 1200, 3600, 10800,
+]
+
+_FILES = list("abcdefgh")
+_RANKS = list("12345678")
+_SQUARES = [f"{f}{r}" for r in _RANKS for f in _FILES]  # a1..h8 row-major
+
+_PIECE_TYPES = ["pawn", "knight", "bishop", "rook", "queen", "king"]
+_COLORS = ["w_color", "b_color"]
+_PROMOTIONS = ["promote_n", "promote_b", "promote_r", "promote_q"]
+
+_CHESS_PIECE_TO_TYPE = {
+    chess.PAWN: "pawn",
+    chess.KNIGHT: "knight",
+    chess.BISHOP: "bishop",
+    chess.ROOK: "rook",
+    chess.QUEEN: "queen",
+    chess.KING: "king",
+}
+_PROMO_CHAR_TO_TOKEN = {"n": "promote_n", "b": "promote_b", "r": "promote_r", "q": "promote_q"}
+
+
+# ---------------------------------------------------------------------------
+# Vocab
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Vocab:
+    token_to_id: dict[str, int]
+    id_to_token: dict[int, str]
+    vocab_size: int
+
+    # First token ID of each move-related group (for the model output head)
+    from_square_offset: int  # f_a1 .. f_h8
+    to_square_offset: int    # t_a1 .. t_h8
+    promo_offset: int        # promote_n .. promote_q
+
+    # Ordered bracket IDs for soft blending (parallel to ELO_BRACKETS / CLOCK_BRACKETS_S)
+    elo_bracket_ids: tuple[int, ...]
+    clock_bracket_ids: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        assert len(self.elo_bracket_ids) == len(ELO_BRACKETS)
+        assert len(self.clock_bracket_ids) == len(CLOCK_BRACKETS_S)
+
+
+def build_vocab() -> Vocab:
+    """Build and return the full token vocabulary. Call once; reuse everywhere."""
+    tokens: list[str] = []
+
+    tokens += ["play_w", "play_b"]
+    tokens += ["bullet", "blitz", "rapid", "classical", "unknown_time"]
+    tokens += [f"elo_{e}" for e in ELO_BRACKETS] + ["elo_unknown"]
+    tokens += [f"clock_{int(s) if s == int(s) else s}" for s in CLOCK_BRACKETS_S]
+    tokens += ["w_k", "w_q", "b_k", "b_q"]
+    tokens += [f"ep_{f}" for f in _FILES]
+    tokens += _COLORS
+    tokens += _PIECE_TYPES
+    tokens += [f"file_{f}" for f in _FILES]
+    tokens += [f"rank_{r}" for r in _RANKS]
+
+    from_square_offset = len(tokens)
+    tokens += [f"f_{sq}" for sq in _SQUARES]
+    to_square_offset = len(tokens)
+    tokens += [f"t_{sq}" for sq in _SQUARES]
+    promo_offset = len(tokens)
+    tokens += _PROMOTIONS
+
+    t2i = {tok: i for i, tok in enumerate(tokens)}
+    i2t = {i: tok for i, tok in enumerate(tokens)}
+
+    return Vocab(
+        token_to_id=t2i,
+        id_to_token=i2t,
+        vocab_size=len(tokens),
+        from_square_offset=from_square_offset,
+        to_square_offset=to_square_offset,
+        promo_offset=promo_offset,
+        elo_bracket_ids=tuple(t2i[f"elo_{e}"] for e in ELO_BRACKETS),
+        clock_bracket_ids=tuple(
+            t2i[f"clock_{int(s) if s == int(s) else s}"] for s in CLOCK_BRACKETS_S
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Position tokens
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PositionTokens:
     """
-    Create a mapping from tokens to unique IDs and save to a file.
+    Tokenized representation of a chess position and (optionally) a move target.
+
+    Board pieces are stored as four parallel lists — one entry per piece on the
+    board, in chess.SQUARES order (a1, b1, ..., h8). The model embeds each piece
+    as emb[color] + emb[piece_type] + emb[file] + emb[rank].
+
+    Elo and clock are stored as raw scalars. The model handles soft blending via
+    elo_blend_weights() / clock_blend_weights(). Use -1 / -1.0 for unknown.
+
+    Move fields are None when tokenizing for inference (no move known yet).
+    """
+    # Discrete meta sequence (variable length; max ~10 tokens)
+    meta_tokens: list[int]
+
+    # Board — parallel lists, one entry per piece (up to 32)
+    color_tokens: list[int]
+    piece_type_tokens: list[int]
+    file_tokens: list[int]
+    rank_tokens: list[int]
+
+    # Continuous conditioning (raw values; model handles blending)
+    elo: int          # -1 if unknown
+    clock_seconds: float  # -1.0 if unknown
+
+    # Move targets (None during inference)
+    from_square_id: Optional[int] = None
+    to_square_id: Optional[int] = None
+    promo_id: Optional[int] = None  # None also when no promotion
+
+    # Metadata (not fed to model; used for splits and per-bucket eval)
+    game_id: str = ""
+    elo_bucket: str = ""  # e.g. "elo_1500"
+
+    @property
+    def n_pieces(self) -> int:
+        return len(self.color_tokens)
+
+    @property
+    def has_move(self) -> bool:
+        return self.from_square_id is not None
+
+
+# ---------------------------------------------------------------------------
+# Core tokenization
+# ---------------------------------------------------------------------------
+
+def tokenize_position(
+    fen: str,
+    vocab: Vocab,
+    uci_move: Optional[str] = None,
+    elo: int = -1,
+    clock_seconds: float = -1.0,
+    time_control: str = "unknown_time",
+    game_id: str = "",
+) -> PositionTokens:
+    """
+    Tokenize a single chess position.
 
     Args:
-        file (str): The file path to save the token mapping.
-    """
-    # Define the range of Elos and other categories
-    elo_ranges = list(range(800, 3401, 100)) + ['weak', 'strong', 'unknown']
-    time_controls = ['bullet', 'blitz', 'rapid', 'classical', 'unknown_time']
-
-    # Create a dictionary for piece placement from FEN
-    pieces = ['p', 'n', 'b', 'r', 'q', 'k', 'P', 'N', 'B', 'R', 'Q', 'K']
-    squares = [f"{chr(file)}{rank}" for rank in range(1, 9) for file in range(97, 105)]
-    moves_from = [f"f_{square}" for square in squares]
-    moves_to = [f"t_{square}" for square in squares]
-    promotion = ['promote_n', 'promote_b', 'promote_r', 'promote_q']
-    castling = ['w_k', 'w_q', 'b_k', 'b_q']
-    en_passant = ['ep_' + col for col in 'abcdefgh']
-
-    # Combine all tokens
-    tokens = ['play_w', 'play_b'] + time_controls + [f"elo_{elo}" for elo in elo_ranges] + castling + en_passant + pieces + squares + moves_from + moves_to + promotion
-
-    # Create a token ID dictionary
-    token_to_id = {token: idx for idx, token in enumerate(tokens)}
-
-    # Save to file
-    with open(file, 'w') as f:
-        json.dump(token_to_id, f)
-
-def tokenize_xfen(xfen_row, token_to_id, inferrence=False):
-    """
-    Tokenize an extended FEN row.
-    The 2 first elements are the number of tokens dedicated to the next move and the number of pieces on the board.
-    Maximum 42 tokens as input for a position (1 for the player to move, 1 for the Elo, 1 for the player id if any, 1 for the time control, 4 for castling rights, 1 for en passant, 32 for the board, and 2 to 3 for the move itself but it can't be 3 if there are 32 pieces left and minus 1 because the token in prediction is not as input).
-    Inferrence mode when the next move is not available
-
-    Args:
-        xfen_row (str): The XFEN row to tokenize.
-        token_to_id (dict): Dictionary mapping tokens to IDs.
-        inferrence (bool): Whether the function is used for inference.
+        fen: Standard FEN string.
+        vocab: Vocab from build_vocab().
+        uci_move: Move in UCI notation ("e2e4", "e7e8q"). None during inference.
+        elo: Elo of the side to move. -1 if unknown.
+        clock_seconds: Seconds remaining for the side to move. -1.0 if unknown.
+        time_control: One of bullet / blitz / rapid / classical / unknown_time.
+        game_id: Source game identifier (for reproducible splits).
 
     Returns:
-        tuple: Tokens for meta, pieces, squares, and next move (if not inference).
+        PositionTokens. Move fields are None when uci_move is None.
     """
-    fen, next_move, white_elo, black_elo, time_control = xfen_row.split(',')
+    t = vocab.token_to_id
+    board = chess.Board(fen)
+    turn_is_white = board.turn == chess.WHITE
 
-    # Parse the FEN part
-    board, turn, castling, en_passant, _, _ = fen.split(' ')
+    # --- Meta tokens -------------------------------------------------------
+    meta: list[int] = [t["play_w" if turn_is_white else "play_b"]]
+    meta.append(t[time_control])
 
-    # Tokenize the board setup
-    pieces_tokens = []
-    squares_tokens = []
-    for rank_index, row in enumerate(board.split('/')):
-        file_index = 0
-        for char in row:
-            if char.isdigit():
-                file_index += int(char)
-            elif char.isalpha():
-                square_index = f"{chr(97 + file_index)}{8 - rank_index}"
-                pieces_tokens.append(token_to_id[char])
-                squares_tokens.append(token_to_id[square_index])
-                file_index += 1
+    if board.has_kingside_castling_rights(chess.WHITE):
+        meta.append(t["w_k"])
+    if board.has_queenside_castling_rights(chess.WHITE):
+        meta.append(t["w_q"])
+    if board.has_kingside_castling_rights(chess.BLACK):
+        meta.append(t["b_k"])
+    if board.has_queenside_castling_rights(chess.BLACK):
+        meta.append(t["b_q"])
 
-    to_move = [token_to_id[f'play_{turn}']]
-    castling_tokens = [
-            token_to_id['w_k'] if 'K' in castling else None,
-            token_to_id['w_q'] if 'Q' in castling else None,
-            token_to_id['b_k'] if 'k' in castling else None,
-            token_to_id['b_q'] if 'q' in castling else None
-        ]
-    castling_tokens = [token for token in castling_tokens if token is not None]
-    en_passant_tokens = [token_to_id['ep_' + en_passant[0]]] if en_passant != '-' else []
-    elo_token = [token_to_id[get_elo_token(white_elo)] if turn == 'w' else token_to_id[get_elo_token(black_elo)]]    
-    time_control_token = [token_to_id[time_control]]
-    
-    meta_tokens = to_move + elo_token + time_control_token + castling_tokens + en_passant_tokens
+    if board.ep_square is not None:
+        meta.append(t[f"ep_{_FILES[chess.square_file(board.ep_square)]}"])
 
-    if inferrence:
-        return meta_tokens, pieces_tokens, squares_tokens, None
+    # --- Board pieces -------------------------------------------------------
+    color_toks: list[int] = []
+    ptype_toks: list[int] = []
+    file_toks: list[int] = []
+    rank_toks: list[int] = []
 
-    from_square, to_square = next_move[:2], next_move[2:4]
-    move_tokens = [token_to_id[f'f_{from_square}'], token_to_id[f't_{to_square}']]
-    
-    if len(next_move) > 4:
-        promotion_piece = 'promote_' + next_move[-1].lower()
-        move_tokens.append(token_to_id[promotion_piece])
-    
-    res = []
-    for id_next_move in range(len(move_tokens)):
-        res.append([meta_tokens + move_tokens[:id_next_move], pieces_tokens, squares_tokens, move_tokens[id_next_move]])
+    for sq in chess.SQUARES:  # a1=0 .. h8=63
+        piece = board.piece_at(sq)
+        if piece is None:
+            continue
+        color_toks.append(t["w_color" if piece.color == chess.WHITE else "b_color"])
+        ptype_toks.append(t[_CHESS_PIECE_TO_TYPE[piece.piece_type]])
+        file_toks.append(t[f"file_{_FILES[chess.square_file(sq)]}"])
+        rank_toks.append(t[f"rank_{_RANKS[chess.square_rank(sq)]}"])
 
-    return res
+    # --- Move targets -------------------------------------------------------
+    from_id = to_id = promo_id = None
+    if uci_move is not None:
+        from_id = t[f"f_{uci_move[:2]}"]
+        to_id = t[f"t_{uci_move[2:4]}"]
+        if len(uci_move) > 4:
+            promo_id = t[_PROMO_CHAR_TO_TOKEN[uci_move[4].lower()]]
 
-def get_elo_token(elo):
-    
-    if elo.lower() == 'unknown':
+    elo_bucket = _elo_bucket_str(elo)
+
+    return PositionTokens(
+        meta_tokens=meta,
+        color_tokens=color_toks,
+        piece_type_tokens=ptype_toks,
+        file_tokens=file_toks,
+        rank_tokens=rank_toks,
+        elo=elo,
+        clock_seconds=clock_seconds,
+        from_square_id=from_id,
+        to_square_id=to_id,
+        promo_id=promo_id,
+        game_id=game_id,
+        elo_bucket=elo_bucket,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Soft-blend weight helpers  (called by model embedding layer)
+# ---------------------------------------------------------------------------
+
+def elo_blend_weights(elo: int, vocab: Vocab) -> tuple[int, int, float]:
+    """
+    Map a raw Elo value to (lower_id, upper_id, alpha) for soft blending:
+        embedding = alpha * emb[lower_id] + (1 - alpha) * emb[upper_id]
+    alpha=1.0 means exactly at the lower bracket (upper_id is ignored).
+    """
+    return _blend_weights(elo, ELO_BRACKETS, vocab.elo_bracket_ids)
+
+
+def clock_blend_weights(clock_s: float, vocab: Vocab) -> tuple[int, int, float]:
+    """
+    Map clock time (seconds) to (lower_id, upper_id, alpha) for soft blending.
+    """
+    return _blend_weights(clock_s, CLOCK_BRACKETS_S, vocab.clock_bracket_ids)
+
+
+def _blend_weights(
+    value: float,
+    brackets: list,
+    bracket_ids: tuple[int, ...],
+) -> tuple[int, int, float]:
+    if value <= brackets[0]:
+        return bracket_ids[0], bracket_ids[0], 1.0
+    if value >= brackets[-1]:
+        return bracket_ids[-1], bracket_ids[-1], 1.0
+
+    # bisect_right gives the index of the first bracket strictly greater than value
+    i = bisect.bisect_right(brackets, value) - 1
+    lo, hi = brackets[i], brackets[i + 1]
+    alpha = (hi - value) / (hi - lo)  # 1.0 at lo, 0.0 at hi
+    return bracket_ids[i], bracket_ids[i + 1], float(alpha)
+
+
+# ---------------------------------------------------------------------------
+# Time-control classification
+# ---------------------------------------------------------------------------
+
+def classify_time_control(tc_str: str) -> str:
+    """
+    Map a Lichess time-control string ("300+3") to a vocab token.
+
+    Uses a 40-move game estimate for the increment component, which is the
+    standard used by FIDE and Lichess for time-control category boundaries.
+
+    Returns one of: bullet / blitz / rapid / classical / unknown_time.
+    """
+    if not tc_str or tc_str == "-":
+        return "unknown_time"
+    try:
+        parts = tc_str.split("+")
+        base = int(parts[0])
+        increment = int(parts[1]) if len(parts) > 1 else 0
+        estimated_seconds = base + 40 * increment
+    except (ValueError, IndexError):
+        return "unknown_time"
+
+    if estimated_seconds < 180:
+        return "bullet"
+    if estimated_seconds < 480:
+        return "blitz"
+    if estimated_seconds < 1500:
+        return "rapid"
+    return "classical"
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _elo_bucket_str(elo: int) -> str:
+    """Return the nearest lower Elo bracket string, e.g. 'elo_1500'."""
+    if elo < 0:
         return "elo_unknown"
-    elo = int(elo)
-    if elo < 800:
-        return "elo_weak"
-    elif elo >= 3400:
-        return "elo_strong"
-    else:
-        return f"elo_{elo // 100 * 100}"
-
-def detokenize_xfen(tokens, id_to_token):
-    return [id_to_token[token] for token in tokens]
-
-def tokenize_file(input_file, output_file, token_to_id):
-    with open(input_file, 'r') as f:
-        data = f.readlines()
-
-    tokenized_data = [','.join(map(str, tokenize_xfen(row.strip(), token_to_id))) for row in data]
-
-    with open(output_file, 'w') as f:
-        f.write('\n'.join(tokenized_data))
-
-def load_token_mapping(file):
-    with open(file, 'r') as f:
-        token_to_id = json.load(f)
-    return token_to_id
-
-def tokenize_batch(batch, token_to_id, inferrence=False):
-    """
-Tokenize a batch of XFEN rows.
-
-            Args:
-        batch (list): List of XFEN rows.
-        token_to_id (dict): Dictionary mapping tokens to IDs.
-        inferrence (bool): Whether the function is used for inference.
-
-    Returns:
-        list: List of tokenized XFEN rows.
-    """
-    if inferrence:
-        return [tokenize_xfen(xfen_row, token_to_id, inferrence) for xfen_row in batch]
-    # else, we need to loop over the result which is a list instead of one element
-    return [elt for xfen_row in batch for elt in tokenize_xfen(xfen_row, token_to_id, inferrence)]
-
-def process_xfen_file_in_batches(input_file, output_file, token_to_id, batch_size=1000, inferrence=False):
-    output_handle = open(output_file, 'w')
-
-    with open(input_file, 'r') as file:
-        batch = []
-        for line in file:
-            batch.append(line.strip())
-            if len(batch) >= batch_size:
-                tokenized_batch = tokenize_batch(batch, token_to_id, inferrence=inferrence)
-                for tokenized_entry in tokenized_batch:
-                    output_handle.write(json.dumps(tokenized_entry) + '\n')
-                batch = []
-
-        if batch:
-            tokenized_batch = tokenize_batch(batch, token_to_id)
-            for tokenized_entry in tokenized_batch:
-                output_handle.write(json.dumps(tokenized_entry) + '\n')
-
-    output_handle.close()
+    clamped = max(0, min(3400, (elo // 100) * 100))
+    return f"elo_{clamped}"

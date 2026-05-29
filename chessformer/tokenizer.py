@@ -161,9 +161,11 @@ class PositionTokens:
     file_tokens: list[int]
     rank_tokens: list[int]
 
-    # Continuous conditioning (raw values; model handles blending)
-    elo: int          # -1 if unknown
-    clock_seconds: float  # -1.0 if unknown
+    # Continuous conditioning — raw values, model handles soft blending. -1/-1.0 = unknown.
+    white_elo: int            # white player's Elo
+    black_elo: int            # black player's Elo
+    white_clock_seconds: float  # white's remaining clock at this position
+    black_clock_seconds: float  # black's remaining clock at this position
 
     # Move targets (None during inference)
     from_square_id: Optional[int] = None
@@ -172,7 +174,7 @@ class PositionTokens:
 
     # Metadata (not fed to model; used for splits and per-bucket eval)
     game_id: str = ""
-    elo_bucket: str = ""  # e.g. "elo_1500"
+    elo_bucket: str = ""  # side-to-move's Elo bucket, e.g. "elo_1500"
 
     @property
     def n_pieces(self) -> int:
@@ -191,8 +193,10 @@ def tokenize_position(
     fen: str,
     vocab: Vocab,
     uci_move: Optional[str] = None,
-    elo: int = -1,
-    clock_seconds: float = -1.0,
+    white_elo: int = -1,
+    black_elo: int = -1,
+    white_clock_seconds: float = -1.0,
+    black_clock_seconds: float = -1.0,
     time_control: str = "unknown_time",
     game_id: str = "",
 ) -> PositionTokens:
@@ -203,8 +207,10 @@ def tokenize_position(
         fen: Standard FEN string.
         vocab: Vocab from build_vocab().
         uci_move: Move in UCI notation ("e2e4", "e7e8q"). None during inference.
-        elo: Elo of the side to move. -1 if unknown.
-        clock_seconds: Seconds remaining for the side to move. -1.0 if unknown.
+        white_elo: White player's Elo. -1 if unknown.
+        black_elo: Black player's Elo. -1 if unknown.
+        white_clock_seconds: White's remaining clock seconds. -1.0 if unknown.
+        black_clock_seconds: Black's remaining clock seconds. -1.0 if unknown.
         time_control: One of bullet / blitz / rapid / classical / unknown_time.
         game_id: Source game identifier (for reproducible splits).
 
@@ -254,7 +260,8 @@ def tokenize_position(
         if len(uci_move) > 4:
             promo_id = t[_PROMO_CHAR_TO_TOKEN[uci_move[4].lower()]]
 
-    elo_bucket = _elo_bucket_str(elo)
+    side_elo = white_elo if turn_is_white else black_elo
+    elo_bucket = _elo_bucket_str(side_elo)
 
     return PositionTokens(
         meta_tokens=meta,
@@ -262,8 +269,10 @@ def tokenize_position(
         piece_type_tokens=ptype_toks,
         file_tokens=file_toks,
         rank_tokens=rank_toks,
-        elo=elo,
-        clock_seconds=clock_seconds,
+        white_elo=white_elo,
+        black_elo=black_elo,
+        white_clock_seconds=white_clock_seconds,
+        black_clock_seconds=black_clock_seconds,
         from_square_id=from_id,
         to_square_id=to_id,
         promo_id=promo_id,

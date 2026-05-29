@@ -137,22 +137,36 @@ def _game_positions(game: chess.pgn.Game, vocab: Vocab) -> Iterator[PositionToke
         headers.get("Date", "") + headers.get("White", "") + headers.get("Black", "")
     )
 
+    # Track each player's last known clock. node.clock() = time remaining for the
+    # player who just moved, recorded AFTER their move. We yield BEFORE the move,
+    # so each player's clock reflects their time at the start of their thinking.
+    w_clock = -1.0
+    b_clock = -1.0
+
     board = game.board()
     for node in game.mainline():
         move = node.move
-        fen = board.fen()
-        elo = white_elo if board.turn == chess.WHITE else black_elo
-        clock_s = node.clock()  # seconds remaining after this move; None if absent
 
         yield tokenize_position(
-            fen=fen,
+            fen=board.fen(),
             vocab=vocab,
             uci_move=move.uci(),
-            elo=elo,
-            clock_seconds=clock_s if clock_s is not None else -1.0,
+            white_elo=white_elo,
+            black_elo=black_elo,
+            white_clock_seconds=w_clock,
+            black_clock_seconds=b_clock,
             time_control=tc_token,
             game_id=game_id,
         )
+
+        # Update clock for the player who just moved
+        clock_s = node.clock()
+        if clock_s is not None:
+            if board.turn == chess.WHITE:
+                w_clock = clock_s
+            else:
+                b_clock = clock_s
+
         board.push(move)
 
 
@@ -252,8 +266,10 @@ def _puzzle_positions(
             fen=board.fen(),
             vocab=vocab,
             uci_move=uci if is_solver_move else None,
-            elo=3400,          # condition on GM Elo for all puzzle positions
-            clock_seconds=-1.0,
+            white_elo=3400,
+            black_elo=3400,
+            white_clock_seconds=-1.0,
+            black_clock_seconds=-1.0,
             time_control="unknown_time",
             game_id=puzzle_id,
         )

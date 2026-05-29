@@ -52,37 +52,41 @@ from chessformer.tokenizer import PositionTokens, Vocab, build_vocab
 # ---------------------------------------------------------------------------
 
 GAMES_SCHEMA = pa.schema([
-    pa.field("game_id",           pa.string()),
-    pa.field("elo_bucket",        pa.string()),
-    pa.field("elo",               pa.int16()),       # side-to-move Elo
-    pa.field("avg_elo",           pa.int16()),       # (white + black) / 2
-    pa.field("elo_spread",        pa.int16()),       # |white - black|
-    pa.field("clock_seconds",     pa.float32()),
-    pa.field("meta_tokens",       pa.list_(pa.int16())),
-    pa.field("color_tokens",      pa.list_(pa.int8())),
-    pa.field("piece_type_tokens", pa.list_(pa.int8())),
-    pa.field("file_tokens",       pa.list_(pa.int8())),
-    pa.field("rank_tokens",       pa.list_(pa.int8())),
-    pa.field("from_square_id",    pa.int16()),
-    pa.field("to_square_id",      pa.int16()),
-    pa.field("promo_id",          pa.int16()),        # -1 = no promotion
+    pa.field("game_id",              pa.string()),
+    pa.field("elo_bucket",           pa.string()),
+    pa.field("white_elo",            pa.int16()),
+    pa.field("black_elo",            pa.int16()),
+    pa.field("avg_elo",              pa.int16()),
+    pa.field("elo_spread",           pa.int16()),
+    pa.field("white_clock_seconds",  pa.float32()),
+    pa.field("black_clock_seconds",  pa.float32()),
+    pa.field("meta_tokens",          pa.list_(pa.int16())),
+    pa.field("color_tokens",         pa.list_(pa.int8())),
+    pa.field("piece_type_tokens",    pa.list_(pa.int8())),
+    pa.field("file_tokens",          pa.list_(pa.int8())),
+    pa.field("rank_tokens",          pa.list_(pa.int8())),
+    pa.field("from_square_id",       pa.int16()),
+    pa.field("to_square_id",         pa.int16()),
+    pa.field("promo_id",             pa.int16()),     # -1 = no promotion
 ])
 
 PUZZLES_SCHEMA = pa.schema([
-    pa.field("puzzle_id",         pa.string()),
-    pa.field("puzzle_rating",     pa.int16()),
-    pa.field("seq_index",         pa.int16()),
-    pa.field("is_solver_move",    pa.bool_()),
-    pa.field("elo",               pa.int16()),
-    pa.field("clock_seconds",     pa.float32()),
-    pa.field("meta_tokens",       pa.list_(pa.int16())),
-    pa.field("color_tokens",      pa.list_(pa.int8())),
-    pa.field("piece_type_tokens", pa.list_(pa.int8())),
-    pa.field("file_tokens",       pa.list_(pa.int8())),
-    pa.field("rank_tokens",       pa.list_(pa.int8())),
-    pa.field("from_square_id",    pa.int16()),
-    pa.field("to_square_id",      pa.int16()),
-    pa.field("promo_id",          pa.int16()),
+    pa.field("puzzle_id",            pa.string()),
+    pa.field("puzzle_rating",        pa.int16()),
+    pa.field("seq_index",            pa.int16()),
+    pa.field("is_solver_move",       pa.bool_()),
+    pa.field("white_elo",            pa.int16()),     # always 3400 (GM conditioning)
+    pa.field("black_elo",            pa.int16()),     # always 3400
+    pa.field("white_clock_seconds",  pa.float32()),   # always -1.0 (unknown)
+    pa.field("black_clock_seconds",  pa.float32()),   # always -1.0
+    pa.field("meta_tokens",          pa.list_(pa.int16())),
+    pa.field("color_tokens",         pa.list_(pa.int8())),
+    pa.field("piece_type_tokens",    pa.list_(pa.int8())),
+    pa.field("file_tokens",          pa.list_(pa.int8())),
+    pa.field("rank_tokens",          pa.list_(pa.int8())),
+    pa.field("from_square_id",       pa.int16()),
+    pa.field("to_square_id",         pa.int16()),
+    pa.field("promo_id",             pa.int16()),
 ])
 
 
@@ -92,40 +96,44 @@ PUZZLES_SCHEMA = pa.schema([
 
 def pos_to_game_row(pos: PositionTokens, avg_elo: int, elo_spread: int) -> dict:
     return {
-        "game_id":           pos.game_id,
-        "elo_bucket":        pos.elo_bucket,
-        "elo":               pos.elo,
-        "avg_elo":           avg_elo,
-        "elo_spread":        elo_spread,
-        "clock_seconds":     pos.clock_seconds,
-        "meta_tokens":       pos.meta_tokens,
-        "color_tokens":      pos.color_tokens,
-        "piece_type_tokens": pos.piece_type_tokens,
-        "file_tokens":       pos.file_tokens,
-        "rank_tokens":       pos.rank_tokens,
-        "from_square_id":    pos.from_square_id,
-        "to_square_id":      pos.to_square_id,
-        "promo_id":          pos.promo_id if pos.promo_id is not None else -1,
+        "game_id":             pos.game_id,
+        "elo_bucket":          pos.elo_bucket,
+        "white_elo":           pos.white_elo,
+        "black_elo":           pos.black_elo,
+        "avg_elo":             avg_elo,
+        "elo_spread":          elo_spread,
+        "white_clock_seconds": pos.white_clock_seconds,
+        "black_clock_seconds": pos.black_clock_seconds,
+        "meta_tokens":         pos.meta_tokens,
+        "color_tokens":        pos.color_tokens,
+        "piece_type_tokens":   pos.piece_type_tokens,
+        "file_tokens":         pos.file_tokens,
+        "rank_tokens":         pos.rank_tokens,
+        "from_square_id":      pos.from_square_id,
+        "to_square_id":        pos.to_square_id,
+        "promo_id":            pos.promo_id if pos.promo_id is not None else -1,
     }
 
 
 def pos_to_puzzle_row(pos: PositionTokens, puzzle_rating: int, seq_index: int) -> dict:
     is_solver = pos.has_move
     return {
-        "puzzle_id":         pos.game_id,
-        "puzzle_rating":     puzzle_rating,
-        "seq_index":         seq_index,
-        "is_solver_move":    is_solver,
-        "elo":               pos.elo,
-        "clock_seconds":     pos.clock_seconds,
-        "meta_tokens":       pos.meta_tokens,
-        "color_tokens":      pos.color_tokens,
-        "piece_type_tokens": pos.piece_type_tokens,
-        "file_tokens":       pos.file_tokens,
-        "rank_tokens":       pos.rank_tokens,
-        "from_square_id":    pos.from_square_id if is_solver else -1,
-        "to_square_id":      pos.to_square_id if is_solver else -1,
-        "promo_id":          (pos.promo_id if pos.promo_id is not None else -1) if is_solver else -1,
+        "puzzle_id":             pos.game_id,
+        "puzzle_rating":         puzzle_rating,
+        "seq_index":             seq_index,
+        "is_solver_move":        is_solver,
+        "white_elo":             pos.white_elo,
+        "black_elo":             pos.black_elo,
+        "white_clock_seconds":   pos.white_clock_seconds,
+        "black_clock_seconds":   pos.black_clock_seconds,
+        "meta_tokens":           pos.meta_tokens,
+        "color_tokens":          pos.color_tokens,
+        "piece_type_tokens":     pos.piece_type_tokens,
+        "file_tokens":           pos.file_tokens,
+        "rank_tokens":           pos.rank_tokens,
+        "from_square_id":        pos.from_square_id if is_solver else -1,
+        "to_square_id":          pos.to_square_id if is_solver else -1,
+        "promo_id":              (pos.promo_id if pos.promo_id is not None else -1) if is_solver else -1,
     }
 
 

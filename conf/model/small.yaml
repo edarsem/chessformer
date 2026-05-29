@@ -4,4 +4,4 @@ n_heads: 4
 n_layers: 4
 ffn_mult: 4       # ffn hidden dim = d_model * ffn_mult
 dropout: 0.1
-max_seq_len: 80   # 32 pieces + meta tokens + a few move tokens
+max_seq_len: 46   # 4 conditioning + max 7 meta + max 32 pieces + 3 move suffix

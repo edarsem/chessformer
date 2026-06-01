@@ -238,20 +238,23 @@ class ChessformerModel(nn.Module):
         pad = torch.cat([board_pad, torch.zeros(B, 3, dtype=torch.bool, device=device)], dim=1)
         T   = x.shape[1]
 
-        # Attention mask: causal for move suffix, full for board prefix
-        #   [1, 1, T, T] static part
-        causal = torch.zeros(T, T, device=device, dtype=dtype)
-        move_causal = torch.triu(
-            torch.full((self.N_MOVE_STEPS, self.N_MOVE_STEPS), float('-inf'), device=device, dtype=dtype),
-            diagonal=1,
+        # Build mask on CPU (vectorized) to avoid MPS -inf arithmetic bugs,
+        # then move to device. All ops are torch vectorized — no Python loops.
+        mask_cpu = torch.zeros(B, 1, T, T, dtype=dtype)
+
+        # Causal upper triangle for move suffix — broadcasts over B and the single head dim
+        mask_cpu[:, :, board_len:, board_len:] = torch.triu(
+            torch.full((self.N_MOVE_STEPS, self.N_MOVE_STEPS), float('-inf')), diagonal=1,
         )
-        causal[board_len:, board_len:] = move_causal
 
-        # Key-padding mask  [B, 1, 1, T]: -inf at padded key positions
-        key_pad = torch.zeros(B, 1, 1, T, device=device, dtype=dtype)
-        key_pad.masked_fill_(pad.unsqueeze(1).unsqueeze(1), float('-inf'))
+        # Key-padding: convert bool pad [B, T] → float [B, 1, 1, T] (0 or -inf),
+        # then add — broadcasts over all query positions. On CPU: 0+-inf=-inf, -inf+-inf=-inf, no nans.
+        pad_float = torch.where(pad.cpu(),
+                                torch.full((B, T), float('-inf'), dtype=dtype),
+                                torch.zeros(B, T, dtype=dtype))
+        mask_cpu = mask_cpu + pad_float.unsqueeze(1).unsqueeze(1)  # [B,1,T,T] + [B,1,1,T]
 
-        mask = causal.unsqueeze(0).unsqueeze(0) + key_pad  # [B, 1, T, T]
+        mask = mask_cpu.to(device)
         return x, mask, board_len
 
     # -----------------------------------------------------------------------

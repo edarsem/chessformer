@@ -1,4 +1,4 @@
-# ~2M param model, runs comfortably on MPS
+# ~0.8M param model, runs comfortably on MPS
 d_model: 128
 n_heads: 4
 n_layers: 4

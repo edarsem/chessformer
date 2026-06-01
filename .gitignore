@@ -10,3 +10,4 @@ outputs/
 .vscode/
 checkpoints/
 wandb/
+.DS_STORE

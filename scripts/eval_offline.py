@@ -29,8 +29,8 @@ from chessformer.tokenizer import build_vocab
 
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
-    ckpt_path = cfg.get("checkpoint", None)
-    split     = cfg.get("split", "val")
+    ckpt_path = cfg.checkpoint
+    split     = cfg.split
     assert ckpt_path, "Pass checkpoint=<path> on the command line."
     assert split in ("val", "test"), "split must be 'val' or 'test'"
 
@@ -45,7 +45,14 @@ def main(cfg: DictConfig) -> None:
     saved_cfg = OmegaConf.create(ckpt["cfg"])
 
     vocab = build_vocab()
-    model = ChessformerModel(vocab, saved_cfg.model).to(device)
+    model = ChessformerModel(
+        vocab    = vocab,
+        d_model  = saved_cfg.model.d_model,
+        n_heads  = saved_cfg.model.n_heads,
+        n_layers = saved_cfg.model.n_layers,
+        ffn_mult = saved_cfg.model.ffn_mult,
+        dropout  = saved_cfg.model.dropout,
+    ).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     step = ckpt.get("step", 0)

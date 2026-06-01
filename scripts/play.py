@@ -234,14 +234,14 @@ def ai_vs_ai(
 
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
-    ckpt_path   = cfg.get("checkpoint", None)
-    mode        = cfg.get("mode", "human_vs_ai")
-    human_side  = cfg.get("human_side", "white")
-    ai_elo      = cfg.ai_elo
-    white_elo   = cfg.white_elo if cfg.white_elo is not None else ai_elo
-    black_elo   = cfg.black_elo if cfg.black_elo is not None else ai_elo
-    temperature = float(cfg.get("temperature", 1.0))
-    display_mode = cfg.get("display", "ascii")
+    ckpt_path    = cfg.checkpoint
+    mode         = cfg.mode
+    human_side   = cfg.human_side
+    ai_elo       = cfg.ai_elo
+    white_elo    = cfg.white_elo if cfg.white_elo is not None else ai_elo
+    black_elo    = cfg.black_elo if cfg.black_elo is not None else ai_elo
+    temperature  = float(cfg.temperature)
+    display_mode = cfg.display
 
     assert ckpt_path, "Pass checkpoint=<path>"
     assert mode in ("human_vs_ai", "ai_vs_ai"), "mode must be human_vs_ai or ai_vs_ai"
@@ -255,7 +255,14 @@ def main(cfg: DictConfig) -> None:
     ckpt      = torch.load(ckpt_path, map_location=device)
     saved_cfg = OmegaConf.create(ckpt["cfg"])
     vocab     = build_vocab()
-    model     = ChessformerModel(vocab, saved_cfg.model).to(device)
+    model     = ChessformerModel(
+        vocab    = vocab,
+        d_model  = saved_cfg.model.d_model,
+        n_heads  = saved_cfg.model.n_heads,
+        n_layers = saved_cfg.model.n_layers,
+        ffn_mult = saved_cfg.model.ffn_mult,
+        dropout  = saved_cfg.model.dropout,
+    ).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     print(f"Loaded checkpoint at step {ckpt.get('step', 0)}  (device: {device})")

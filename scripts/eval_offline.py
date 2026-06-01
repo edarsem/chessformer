@@ -53,7 +53,7 @@ def main(cfg: DictConfig) -> None:
         ffn_mult = saved_cfg.model.ffn_mult,
         dropout  = saved_cfg.model.dropout,
     ).to(device)
-    model.load_state_dict(ckpt["model"])
+    model.load_state_dict(ckpt["model"], strict=False)
     model.eval()
     step = ckpt.get("step", 0)
     print(f"Loaded model at step {step}  ({sum(p.numel() for p in model.parameters()):,} params)")

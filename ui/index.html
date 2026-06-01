@@ -5,231 +5,403 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Chessformer</title>
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: #1a1a2e; color: #e0e0e0; min-height: 100vh;
-    display: flex; flex-direction: column; align-items: center; padding: 20px;
-  }
-  h1 { font-size: 1.4rem; letter-spacing: 0.05em; color: #a0c4ff; margin-bottom: 16px; }
-  .main { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; justify-content: center; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  /* Board area */
-  .board-area { display: flex; flex-direction: column; align-items: center; gap: 10px; }
-  #board-wrap {
-    position: relative; width: 480px; height: 480px;
-    border: 2px solid #333; border-radius: 4px; overflow: hidden;
-    cursor: pointer;
-  }
-  #board-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
-  #board-svg svg { width: 100%; height: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #12122a;
+  color: #dde;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 18px 12px 40px;
+  gap: 14px;
+}
 
-  /* Click overlay: 8×8 grid */
-  #board-overlay {
-    position: absolute; top: 0; left: 0; width: 480px; height: 480px;
-    display: grid; grid-template-columns: repeat(8, 60px); grid-template-rows: repeat(8, 60px);
-  }
-  .sq { width: 60px; height: 60px; cursor: pointer; }
-  .sq:hover { background: rgba(255,255,255,0.08); }
+h1 {
+  font-size: 1.25rem;
+  letter-spacing: .08em;
+  color: #90b8f0;
+  text-transform: uppercase;
+}
 
-  /* Promotion popup */
-  #promo-popup {
-    display: none; position: absolute; top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    background: #2a2a4a; border: 2px solid #555; border-radius: 8px;
-    padding: 16px; z-index: 10; text-align: center;
-  }
-  #promo-popup p { margin-bottom: 10px; font-size: 0.9rem; }
-  .promo-btn {
-    background: #3a3a5a; border: 1px solid #666; color: #e0e0e0;
-    padding: 8px 14px; margin: 4px; border-radius: 4px; cursor: pointer; font-size: 1.2rem;
-  }
-  .promo-btn:hover { background: #5a5a8a; }
+/* ── Three-column layout ───────────────────────────────────── */
+.layout {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  justify-content: center;
+  flex-wrap: wrap;
+}
 
-  /* Nav + status */
-  .nav-row { display: flex; align-items: center; gap: 12px; }
-  .nav-btn {
-    background: #2a2a4a; border: 1px solid #444; color: #ccc;
-    padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 1rem;
-  }
-  .nav-btn:hover { background: #3a3a5a; }
-  .nav-btn:disabled { opacity: 0.35; cursor: default; }
-  #move-label { font-size: 0.85rem; color: #aaa; min-width: 120px; text-align: center; }
-  #status-label { font-size: 0.85rem; font-weight: 600; color: #ffd700; }
+/* ── Shared panel/card styles ──────────────────────────────── */
+.panel {
+  display: flex; flex-direction: column; gap: 12px; width: 230px;
+  max-height: calc(100vh - 80px); overflow-y: auto;
+}
 
-  /* Right panel */
-  .panel { width: 280px; display: flex; flex-direction: column; gap: 16px; }
-  .card {
-    background: #22223b; border: 1px solid #333; border-radius: 8px; padding: 14px;
-  }
-  .card h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: #888; margin-bottom: 12px; }
+.card {
+  background: #1c1c3a;
+  border: 1px solid #2e2e50;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.card h3 {
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: #6680aa;
+  margin-bottom: 10px;
+}
 
-  label { font-size: 0.82rem; color: #bbb; display: block; margin-bottom: 4px; }
-  input[type=range] { width: 100%; accent-color: #a0c4ff; margin-bottom: 8px; }
-  .val-display { font-size: 0.8rem; color: #a0c4ff; float: right; }
+/* ── Form controls ─────────────────────────────────────────── */
+label { font-size: .8rem; color: #aab; display: block; margin-bottom: 3px; }
+.val  { font-size: .78rem; color: #90b8f0; float: right; }
 
-  select, .btn {
-    width: 100%; padding: 7px 10px; border-radius: 5px; border: 1px solid #444;
-    background: #2a2a4a; color: #e0e0e0; font-size: 0.85rem; cursor: pointer;
-    margin-bottom: 6px;
-  }
-  .btn:hover { background: #3a3a5a; }
-  .btn-primary { background: #1a5276; border-color: #2e86c1; }
-  .btn-primary:hover { background: #2874a6; }
-  .btn-danger { background: #5d1212; border-color: #922b21; }
-  .btn-danger:hover { background: #7b241c; }
+input[type=range] {
+  width: 100%;
+  accent-color: #90b8f0;
+  margin-bottom: 10px;
+}
+input[type=number] {
+  width: 100%;
+  background: #0e0e22;
+  border: 1px solid #3a3a60;
+  border-radius: 4px;
+  color: #dde;
+  padding: 5px 8px;
+  font-size: .82rem;
+  margin-bottom: 8px;
+}
+input[type=number]:focus { outline: 1px solid #90b8f0; }
 
-  .toggle-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-  .toggle-row label { margin: 0; }
-  input[type=checkbox] { accent-color: #a0c4ff; width: 16px; height: 16px; cursor: pointer; }
+select {
+  width: 100%;
+  background: #1a1a38;
+  border: 1px solid #3a3a60;
+  border-radius: 5px;
+  color: #dde;
+  padding: 6px 8px;
+  font-size: .82rem;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
 
-  /* Debug panel */
-  #debug-panel { display: none; }
-  .prob-bar-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-  .prob-bar-label { font-size: 0.72rem; color: #aaa; width: 30px; flex-shrink: 0; }
-  .prob-bar-bg { flex: 1; height: 12px; background: #1a1a2e; border-radius: 3px; overflow: hidden; }
-  .prob-bar-fill { height: 100%; border-radius: 3px; }
-  .prob-bar-val { font-size: 0.72rem; color: #aaa; width: 40px; text-align: right; flex-shrink: 0; }
+.btn {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 5px;
+  border: 1px solid #3a3a60;
+  background: #1a1a38;
+  color: #dde;
+  font-size: .82rem;
+  cursor: pointer;
+  margin-bottom: 6px;
+  text-align: center;
+}
+.btn:hover   { background: #2a2a50; }
+.btn-primary { background: #133060; border-color: #2060a0; }
+.btn-primary:hover { background: #1a4080; }
+.btn-danger  { background: #401318; border-color: #802030; }
+.btn-danger:hover  { background: #5a1c22; }
 
-  table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
-  th { color: #888; text-align: left; padding: 3px 6px; font-weight: normal; }
-  td { padding: 3px 6px; }
-  tr:nth-child(even) td { background: rgba(255,255,255,0.03); }
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.toggle-row label { margin: 0; }
+input[type=checkbox] { accent-color: #90b8f0; width: 15px; height: 15px; cursor: pointer; }
 
-  /* Puzzle panel */
-  #puzzle-panel { display: none; }
-  .puzzle-progress { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
-  .puzzle-dot {
-    width: 20px; height: 20px; border-radius: 50%; border: 1px solid #555;
-    display: flex; align-items: center; justify-content: center; font-size: 0.7rem;
-  }
-  .dot-pending  { background: #333; }
-  .dot-correct  { background: #1a6b1a; border-color: #2ecc71; color: #2ecc71; }
-  .dot-wrong    { background: #6b1a1a; border-color: #e74c3c; color: #e74c3c; }
-  .dot-current  { background: #1a3a6b; border-color: #3498db; }
+/* ── Board area ────────────────────────────────────────────── */
+.board-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
 
-  .puzzle-list { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
-  .puzzle-item {
-    padding: 7px 10px; background: #2a2a4a; border-radius: 5px; cursor: pointer;
-    border: 1px solid #333; font-size: 0.82rem;
-  }
-  .puzzle-item:hover { background: #3a3a5a; }
+#board-wrap {
+  position: relative;
+  width: 600px; height: 600px;
+  border: 2px solid #2e2e50;
+  border-radius: 4px;
+  overflow: visible;
+  cursor: pointer;
+  flex-shrink: 0;
+}
 
-  /* Spinner */
-  #spinner {
-    display: none; position: fixed; top: 50%; left: 50%;
-    transform: translate(-50%, -50%); font-size: 2rem; pointer-events: none;
-  }
+#board-svg {
+  position: absolute; top: 0; left: 0;
+  width: 600px; height: 600px;
+  pointer-events: none;
+}
+#board-svg svg { width: 600px; height: 600px; display: block; }
+
+#board-overlay {
+  position: absolute; top: 0; left: 0;
+  width: 600px; height: 600px;
+  display: grid;
+  grid-template-columns: repeat(8, 75px);
+  grid-template-rows:    repeat(8, 75px);
+}
+.sq { width: 75px; height: 75px; cursor: pointer; }
+.sq:hover { background: rgba(255,255,255,.07); }
+
+/* Promotion popup */
+#promo-popup {
+  display: none;
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background: #1e1e40;
+  border: 2px solid #404070;
+  border-radius: 10px;
+  padding: 16px 20px;
+  z-index: 20;
+  text-align: center;
+}
+#promo-popup p { font-size: .85rem; margin-bottom: 10px; color: #aab; }
+.promo-btn {
+  background: #2a2a50;
+  border: 1px solid #505090;
+  color: #dde;
+  padding: 8px 14px; margin: 4px;
+  border-radius: 5px; cursor: pointer; font-size: 1.4rem;
+}
+.promo-btn:hover { background: #3a3a6a; }
+
+/* ── Nav row ───────────────────────────────────────────────── */
+.nav-row {
+  display: flex; align-items: center; gap: 8px;
+}
+.nav-btn {
+  background: #1c1c3a;
+  border: 1px solid #3a3a60;
+  color: #aab;
+  padding: 5px 12px;
+  border-radius: 4px; cursor: pointer; font-size: .95rem;
+}
+.nav-btn:hover   { background: #2a2a50; }
+.nav-btn:disabled { opacity: .3; cursor: default; }
+#move-label { font-size: .82rem; color: #888; min-width: 130px; text-align: center; }
+
+#status-bar {
+  font-size: .85rem;
+  font-weight: 600;
+  color: #ffd060;
+  min-height: 1.2em;
+  text-align: center;
+}
+
+/* ── FEN / PGN import ──────────────────────────────────────── */
+textarea {
+  width: 100%;
+  background: #0e0e22;
+  border: 1px solid #3a3a60;
+  border-radius: 4px;
+  color: #ccd;
+  padding: 6px 8px;
+  font-size: .75rem;
+  font-family: monospace;
+  resize: vertical;
+  margin-bottom: 6px;
+}
+textarea:focus { outline: 1px solid #90b8f0; }
+
+/* ── Debug / Engine panel ──────────────────────────────────── */
+#engine-panel { display: none; }
+
+.prob-row {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 3px;
+}
+.prob-lbl { font-size: .7rem; color: #8a9; width: 28px; flex-shrink: 0; }
+.prob-bg  { flex: 1; height: 10px; background: #0e0e22; border-radius: 2px; overflow: hidden; }
+.prob-fill { height: 100%; border-radius: 2px; }
+.prob-val  { font-size: .7rem; color: #8a9; width: 38px; text-align: right; flex-shrink: 0; }
+
+table { width: 100%; border-collapse: collapse; font-size: .76rem; margin-top: 6px; }
+th { color: #6680aa; text-align: left; padding: 2px 5px; font-weight: normal; }
+td { padding: 2px 5px; }
+tr:nth-child(even) td { background: rgba(255,255,255,.03); }
+
+/* ── Puzzle panel ──────────────────────────────────────────── */
+#puzzle-panel { display: none; }
+
+.puzzle-list {
+  display: flex; flex-direction: column; gap: 5px;
+  max-height: 260px; overflow-y: auto;
+  margin-top: 6px;
+}
+.puzzle-item {
+  padding: 6px 10px;
+  background: #1a1a38; border: 1px solid #2e2e50;
+  border-radius: 5px; cursor: pointer; font-size: .78rem;
+}
+.puzzle-item:hover { background: #2a2a50; }
+
+.puzzle-progress { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+.dot {
+  width: 18px; height: 18px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: .62rem; border: 1px solid #3a3a60;
+}
+.dot-pending { background: #1e1e40; }
+.dot-ok      { background: #0e3520; border-color: #2ea060; color: #2ea060; }
+.dot-bad     { background: #350e0e; border-color: #a03030; color: #a03030; }
+.dot-cur     { background: #0e2040; border-color: #3090d0; }
+
+/* ── Spinner ───────────────────────────────────────────────── */
+#spinner {
+  display: none;
+  position: fixed; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 2.5rem; pointer-events: none; z-index: 999;
+}
+
+/* ── Keyboard hint ─────────────────────────────────────────── */
+.kbd-hint {
+  font-size: .68rem; color: #556; text-align: center; margin-top: 2px;
+}
+kbd {
+  background: #1e1e3a; border: 1px solid #3a3a60;
+  border-radius: 3px; padding: 1px 4px; font-size: .68rem; color: #7790bb;
+}
 </style>
 </head>
 <body>
 <h1>Chessformer</h1>
 
-<div class="main">
-  <!-- Board -->
+<div class="layout">
+
+  <!-- ══ LEFT PANEL: Elo + Clocks ══════════════════════════════════════ -->
+  <div class="panel">
+
+    <div class="card">
+      <h3>Conditioning</h3>
+
+      <label>White Elo <span class="val" id="v-we">2800</span></label>
+      <input type="range" id="sl-we" min="800" max="3400" step="100" value="2800"
+             oninput="document.getElementById('v-we').textContent=this.value"
+             onchange="setSetting('white_elo', +this.value)">
+
+      <label>Black Elo <span class="val" id="v-be">2800</span></label>
+      <input type="range" id="sl-be" min="800" max="3400" step="100" value="2800"
+             oninput="document.getElementById('v-be').textContent=this.value"
+             onchange="setSetting('black_elo', +this.value)">
+
+      <label>White clock (seconds) <span class="val" id="v-wc">120</span></label>
+      <input type="range" id="sl-wc" min="0" max="3600" step="10" value="120"
+             oninput="document.getElementById('v-wc').textContent=fmtClock(+this.value)"
+             onchange="setSetting('white_clock_s', +this.value)">
+
+      <label>Black clock (seconds) <span class="val" id="v-bc">120</span></label>
+      <input type="range" id="sl-bc" min="0" max="3600" step="10" value="120"
+             oninput="document.getElementById('v-bc').textContent=fmtClock(+this.value)"
+             onchange="setSetting('black_clock_s', +this.value)">
+    </div>
+
+    <!-- Import -->
+    <div class="card">
+      <h3>Import FEN / PGN</h3>
+      <textarea id="import-text" rows="4" placeholder="Paste FEN or PGN here…"></textarea>
+      <button class="btn btn-primary" onclick="importPosition()">Load</button>
+    </div>
+
+  </div>
+
+  <!-- ══ CENTER: Board ══════════════════════════════════════════════════ -->
   <div class="board-area">
     <div id="board-wrap">
       <div id="board-svg"></div>
       <div id="board-overlay"></div>
       <div id="promo-popup">
         <p>Promote to:</p>
-        <button class="promo-btn" onclick="submitPromo('q')">♛</button>
-        <button class="promo-btn" onclick="submitPromo('r')">♜</button>
-        <button class="promo-btn" onclick="submitPromo('b')">♝</button>
-        <button class="promo-btn" onclick="submitPromo('n')">♞</button>
+        <button class="promo-btn" onclick="submitPromo('q')">♛ Q</button>
+        <button class="promo-btn" onclick="submitPromo('r')">♜ R</button>
+        <button class="promo-btn" onclick="submitPromo('b')">♝ B</button>
+        <button class="promo-btn" onclick="submitPromo('n')">♞ N</button>
       </div>
     </div>
     <div class="nav-row">
-      <button class="nav-btn" id="btn-first"  onclick="navTo(0)">⏮</button>
-      <button class="nav-btn" id="btn-prev"   onclick="navRel(-1)">◀</button>
-      <span id="move-label">—</span>
-      <button class="nav-btn" id="btn-next"   onclick="navRel(1)">▶</button>
-      <button class="nav-btn" id="btn-last"   onclick="navLast()">⏭</button>
+      <button class="nav-btn" id="btn-first" onclick="navTo(0)"     title="First">⏮</button>
+      <button class="nav-btn" id="btn-prev"  onclick="navRel(-1)"   title="Prev ◀">◀</button>
+      <span   id="move-label">—</span>
+      <button class="nav-btn" id="btn-next"  onclick="navRel(1)"    title="Next ▶">▶</button>
+      <button class="nav-btn" id="btn-last"  onclick="navLast()"    title="Last">⏭</button>
     </div>
-    <div id="status-label"></div>
+    <div id="status-bar"></div>
+    <div class="kbd-hint">
+      <kbd>←</kbd><kbd>→</kbd> navigate &nbsp;
+      <kbd>E</kbd> engine &nbsp;
+      <kbd>N</kbd> new game
+    </div>
   </div>
 
-  <!-- Right panel -->
+  <!-- ══ RIGHT PANEL: Mode + Engine + Puzzles ══════════════════════════ -->
   <div class="panel">
 
-    <!-- Controls -->
+    <!-- Game controls -->
     <div class="card">
-      <h3>Controls</h3>
+      <h3>Game</h3>
 
       <label>Mode</label>
-      <select id="sel-mode" onchange="changeSetting('mode', this.value)">
+      <select id="sel-mode" onchange="setSetting('mode', this.value)">
         <option value="human_vs_ai">Human vs AI</option>
+        <option value="human_vs_human">Human vs Human</option>
         <option value="ai_vs_ai">AI vs AI</option>
         <option value="puzzle">Puzzle</option>
       </select>
 
       <div id="side-row">
         <label>You play as</label>
-        <select id="sel-side" onchange="changeSetting('human_side', this.value)">
+        <select id="sel-side" onchange="setSetting('human_side', this.value)">
           <option value="white">White</option>
           <option value="black">Black</option>
         </select>
       </div>
 
-      <label>
-        White Elo <span class="val-display" id="white-elo-val">2800</span>
-      </label>
-      <input type="range" id="sl-white-elo" min="800" max="3400" step="100" value="2800"
-             oninput="document.getElementById('white-elo-val').textContent=this.value"
-             onchange="changeSetting('white_elo', parseInt(this.value))">
-
-      <label>
-        Black Elo <span class="val-display" id="black-elo-val">2800</span>
-      </label>
-      <input type="range" id="sl-black-elo" min="800" max="3400" step="100" value="2800"
-             oninput="document.getElementById('black-elo-val').textContent=this.value"
-             onchange="changeSetting('black_elo', parseInt(this.value))">
-
       <div class="toggle-row">
         <label>Argmax (greedy)</label>
-        <input type="checkbox" id="chk-argmax" checked onchange="changeSetting('argmax', this.checked)">
+        <input type="checkbox" id="chk-argmax" checked onchange="setSetting('argmax', this.checked)">
       </div>
-
-      <div id="temp-row">
-        <label>
-          Temperature <span class="val-display" id="temp-val">1.0</span>
-        </label>
+      <div id="temp-row" style="display:none">
+        <label>Temperature <span class="val" id="v-temp">1.0</span></label>
         <input type="range" id="sl-temp" min="0.1" max="2.0" step="0.1" value="1.0"
-               oninput="document.getElementById('temp-val').textContent=parseFloat(this.value).toFixed(1)"
-               onchange="changeSetting('temperature', parseFloat(this.value))">
+               oninput="document.getElementById('v-temp').textContent=parseFloat(this.value).toFixed(1)"
+               onchange="setSetting('temperature', +this.value)">
       </div>
 
-      <div class="toggle-row">
-        <label>Debug mode</label>
-        <input type="checkbox" id="chk-debug" onchange="changeSetting('debug', this.checked)">
+      <div class="toggle-row" style="margin-top:4px">
+        <label>Engine analysis (E)</label>
+        <input type="checkbox" id="chk-engine" onchange="setSetting('engine', this.checked)">
       </div>
 
-      <div style="display:flex; gap:6px; margin-top:6px;">
-        <button class="btn btn-primary" style="flex:1" onclick="newGame()">New Game</button>
-        <button class="btn btn-danger"  style="flex:1" onclick="resetBoard()">Reset</button>
+      <div style="display:flex;gap:6px;margin-top:4px">
+        <button class="btn btn-primary" style="flex:1" onclick="newGame()">New game</button>
+        <button class="btn btn-danger"  style="flex:1" onclick="resetPos()">Reset</button>
       </div>
-      <button class="btn" id="btn-ai-move" onclick="triggerAiMove()" style="display:none">
-        AI Move ▶
-      </button>
+      <button class="btn" id="btn-ai" onclick="triggerAi()" style="display:none">AI Move ▶</button>
     </div>
 
-    <!-- Debug panel -->
-    <div class="card" id="debug-panel">
-      <h3>Model Debug</h3>
-      <p style="font-size:0.78rem; color:#888; margin-bottom:8px;">From-square probabilities (top 5)</p>
+    <!-- Engine analysis -->
+    <div class="card" id="engine-panel">
+      <h3>Engine Analysis</h3>
+      <p style="font-size:.72rem;color:#6680aa;margin-bottom:6px">From-square (top 5)</p>
       <div id="from-bars"></div>
-      <p style="font-size:0.78rem; color:#888; margin:8px 0;">Top 5 moves</p>
+      <p style="font-size:.72rem;color:#6680aa;margin:6px 0 0">Top 5 moves</p>
       <table>
         <thead><tr><th>From</th><th>To</th><th>Prob</th></tr></thead>
-        <tbody id="top-moves-body"></tbody>
+        <tbody id="top-tbody"></tbody>
       </table>
     </div>
 
-    <!-- Puzzle panel -->
-    <div class="card" id="puzzle-panel">
+    <!-- Puzzles (always visible) -->
+    <div class="card">
       <h3>Puzzles</h3>
-      <div id="puzzle-progress-area" style="margin-bottom:10px;"></div>
-      <button class="btn" onclick="loadPuzzleList()">Load New Puzzles</button>
+      <div id="puzzle-prog"></div>
+      <button class="btn" onclick="fetchPuzzles()">Load puzzles</button>
       <div class="puzzle-list" id="puzzle-list"></div>
     </div>
 
@@ -239,15 +411,15 @@
 <div id="spinner">⏳</div>
 
 <script>
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
 // State
-// ---------------------------------------------------------------------------
-let state = {};
-let pendingPromo = null;  // {from_sq, to_sq} when promotion choice needed
+// ─────────────────────────────────────────────────────────────────────
+let S       = {};
+let pending = null;  // {from_sq, to_sq} awaiting promo choice
 
-// ---------------------------------------------------------------------------
-// API helpers
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
+// API
+// ─────────────────────────────────────────────────────────────────────
 function spin(on) { document.getElementById('spinner').style.display = on ? 'block' : 'none'; }
 
 async function api(method, path, body) {
@@ -255,163 +427,167 @@ async function api(method, path, body) {
   try {
     const opts = { method, headers: {'Content-Type': 'application/json'} };
     if (body !== undefined) opts.body = JSON.stringify(body);
-    const r = await fetch(path, opts);
+    const r    = await fetch(path, opts);
     const data = await r.json();
     if (!r.ok) { alert(data.detail || 'Error'); return null; }
     return data;
   } finally { spin(false); }
 }
 
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
 // Render
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
 function render(s) {
   if (!s) return;
-  state = s;
+  S = s;
 
   // Board SVG
   document.getElementById('board-svg').innerHTML = s.svg;
 
-  // Rebuild overlay grid
+  // Rebuild click overlay
   buildOverlay(s.flipped, s.sq_size);
 
-  // Status
-  const statusEl = document.getElementById('status-label');
-  const statusMsg = {
-    'checkmate': '♚ Checkmate!', 'stalemate': '½ Stalemate', 'draw': '½ Draw',
-    'check': '+ Check!', 'playing': ''
-  };
-  statusEl.textContent = statusMsg[s.status] || s.status;
+  // Status bar
+  const msg = { checkmate:'♚ Checkmate!', stalemate:'½ Stalemate',
+                draw:'½ Draw', check:'+ Check!', playing:'' };
+  document.getElementById('status-bar').textContent = msg[s.status] || s.status;
 
   // Move label
-  const n = s.history.length;
-  const idx = s.history_idx;
+  const n = s.history.length, idx = s.history_idx;
   document.getElementById('move-label').textContent =
-    n === 0 ? 'Start' : `Move ${Math.ceil(idx/2)} / ${Math.ceil(n/2)}`;
+    n === 0 ? 'Start' : (idx === 0 ? 'Start' :
+      `Move ${Math.ceil(idx/2)} / ${Math.ceil(n/2)}`);
 
   // Nav buttons
   document.getElementById('btn-first').disabled = idx === 0;
-  document.getElementById('btn-prev').disabled  = idx === 0;
-  document.getElementById('btn-next').disabled  = idx >= n;
-  document.getElementById('btn-last').disabled  = idx >= n;
+  document.getElementById('btn-prev') .disabled = idx === 0;
+  document.getElementById('btn-next') .disabled = idx >= n;
+  document.getElementById('btn-last') .disabled = idx >= n;
 
-  // Sync controls
-  document.getElementById('sel-mode').value   = s.mode;
-  document.getElementById('sel-side').value   = s.human_side;
-  document.getElementById('sl-white-elo').value = s.white_elo;
-  document.getElementById('white-elo-val').textContent = s.white_elo;
-  document.getElementById('sl-black-elo').value = s.black_elo;
-  document.getElementById('black-elo-val').textContent = s.black_elo;
-  document.getElementById('sl-temp').value = s.temperature;
-  document.getElementById('temp-val').textContent = s.temperature.toFixed(1);
+  // Sync controls (avoid re-triggering events with a guard)
+  syncEl('sel-mode',  s.mode);
+  syncEl('sel-side',  s.human_side);
+  syncRange('sl-we',  s.white_elo,    'v-we',   v => v);
+  syncRange('sl-be',  s.black_elo,    'v-be',   v => v);
+  syncRange('sl-wc',  s.white_clock_s,'v-wc',   fmtClock);
+  syncRange('sl-bc',  s.black_clock_s,'v-bc',   fmtClock);
+  syncRange('sl-temp',s.temperature,  'v-temp', v => v.toFixed(1));
   document.getElementById('chk-argmax').checked = s.argmax;
-  document.getElementById('chk-debug').checked  = s.debug;
+  document.getElementById('chk-engine').checked = s.engine;
 
-  // Side row visibility
+  // Visibility
   document.getElementById('side-row').style.display =
     s.mode === 'human_vs_ai' ? '' : 'none';
-
-  // AI Move button (ai_vs_ai mode, at latest position, not game over)
-  const showAiBtn = s.mode === 'ai_vs_ai' && s.at_latest && s.status === 'playing';
-  document.getElementById('btn-ai-move').style.display = showAiBtn ? '' : 'none';
-
-  // Debug panel
-  const debugPanel = document.getElementById('debug-panel');
-  debugPanel.style.display = s.debug ? '' : 'none';
-  if (s.debug && s.debug_info) renderDebug(s.debug_info);
-
-  // Puzzle panel
-  const puzzlePanel = document.getElementById('puzzle-panel');
-  puzzlePanel.style.display = s.mode === 'puzzle' ? '' : 'none';
-  if (s.mode === 'puzzle') renderPuzzleProgress(s.puzzle);
-
-  // Temp slider visibility
   document.getElementById('temp-row').style.display = s.argmax ? 'none' : '';
+  document.getElementById('btn-ai').style.display =
+    (s.mode === 'ai_vs_ai' && s.at_latest && s.live_status === 'playing') ? '' : 'none';
+
+  // Engine panel
+  document.getElementById('engine-panel').style.display = s.engine ? '' : 'none';
+  if (s.engine && s.debug_info) renderEngine(s.debug_info);
+
+  // Puzzle progress (always render, shows nothing when not in puzzle mode)
+  renderPuzzleProgress(s.mode === 'puzzle' ? s.puzzle : null);
+}
+
+function syncEl(id, val) {
+  const el = document.getElementById(id);
+  if (el && el.value !== String(val)) el.value = val;
+}
+function syncRange(id, val, dispId, fmt) {
+  const el = document.getElementById(id);
+  if (el) el.value = val;
+  const d  = document.getElementById(dispId);
+  if (d)  d.textContent = fmt(val);
 }
 
 function buildOverlay(flipped, sqSize) {
-  const overlay = document.getElementById('board-overlay');
-  overlay.innerHTML = '';
+  const ov = document.getElementById('board-overlay');
+  ov.innerHTML = '';
   for (let row = 0; row < 8; row++) {
     for (let col = 0; col < 8; col++) {
-      // Map (row, col) of the visual grid to chess square index
-      // row 0 = top of displayed board
-      // White perspective: top = rank 7, bottom = rank 0
-      const rank = flipped ? row : 7 - row;
+      const rank = flipped ? row     : 7 - row;
       const file = flipped ? 7 - col : col;
-      const sq = rank * 8 + file;
-      const div = document.createElement('div');
-      div.className = 'sq';
+      const sq   = rank * 8 + file;
+      const div  = document.createElement('div');
+      div.className  = 'sq';
       div.dataset.sq = sq;
-      div.addEventListener('click', () => handleSquareClick(sq));
-      overlay.appendChild(div);
+      div.addEventListener('click', () => handleClick(sq));
+      ov.appendChild(div);
     }
   }
 }
 
-// ---------------------------------------------------------------------------
-// Debug rendering
-// ---------------------------------------------------------------------------
-function renderDebug(info) {
-  // From-square top-5 bars
-  const fromBars = document.getElementById('from-bars');
-  const fromProbs = info.from_probs;
-  const top5From = fromProbs
-    .map((p, i) => ({sq: i, p}))
-    .sort((a,b) => b.p - a.p)
-    .slice(0, 5);
-  fromBars.innerHTML = top5From.map(({sq, p}) => `
-    <div class="prob-bar-row">
-      <span class="prob-bar-label">${squareName(sq)}</span>
-      <div class="prob-bar-bg">
-        <div class="prob-bar-fill" style="width:${(p*100).toFixed(1)}%;background:#3a8fd4"></div>
-      </div>
-      <span class="prob-bar-val">${(p*100).toFixed(1)}%</span>
+// ─────────────────────────────────────────────────────────────────────
+// Engine analysis panel
+// ─────────────────────────────────────────────────────────────────────
+function renderEngine(info) {
+  // From-square bars (top 5)
+  const fp   = info.from_probs;
+  const top5 = fp.map((p,i)=>({sq:i,p})).sort((a,b)=>b.p-a.p).slice(0,5);
+  document.getElementById('from-bars').innerHTML = top5.map(({sq,p}) => `
+    <div class="prob-row">
+      <span class="prob-lbl">${sqName(sq)}</span>
+      <div  class="prob-bg"><div class="prob-fill"
+        style="width:${(p*100).toFixed(1)}%;background:#3a7fd0"></div></div>
+      <span class="prob-val">${(p*100).toFixed(1)}%</span>
     </div>`).join('');
 
   // Top moves table
-  const tbody = document.getElementById('top-moves-body');
-  tbody.innerHTML = info.top_moves.map(m => `
-    <tr>
-      <td>${squareName(m.from)}</td>
-      <td>${squareName(m.to)}</td>
-      <td>${(m.prob*100).toFixed(1)}%</td>
-    </tr>`).join('');
+  document.getElementById('top-tbody').innerHTML =
+    info.top_moves.map(m => `<tr>
+      <td>${sqName(m.from)}</td><td>${sqName(m.to)}</td>
+      <td>${(m.prob*100).toFixed(1)}%</td></tr>`).join('');
 }
 
-function renderPuzzleProgress(puzzle) {
-  const area = document.getElementById('puzzle-progress-area');
-  if (!puzzle) { area.innerHTML = ''; return; }
+// ─────────────────────────────────────────────────────────────────────
+// Puzzle panel
+// ─────────────────────────────────────────────────────────────────────
+function renderPuzzleProgress(p) {
+  const el = document.getElementById('puzzle-prog');
+  if (!p) { el.innerHTML = ''; return; }
   const dots = [];
-  for (let i = 0; i < puzzle.total; i++) {
-    let cls = 'dot-pending', txt = '';
-    if (i < puzzle.done)         { cls = 'dot-correct'; txt = '✓'; }
-    else if (i === puzzle.done)  { cls = 'dot-current'; }
-    dots.push(`<div class="puzzle-dot ${cls}">${txt}</div>`);
+  for (let i = 0; i < p.total; i++) {
+    const cls = i < p.done ? 'dot-ok' : (i === p.done ? 'dot-cur' : 'dot-pending');
+    const txt = i < p.done ? '✓' : '';
+    dots.push(`<div class="dot ${cls}">${txt}</div>`);
   }
-  const solved = puzzle.solved ? ' <span style="color:#2ecc71">Solved!</span>' : '';
-  area.innerHTML = `
-    <div style="font-size:0.8rem;color:#888;margin-bottom:6px">
-      Rating: ${puzzle.rating} | ${puzzle.done}/${puzzle.total} moves${solved}
+  const solved = p.solved ? ' <span style="color:#30c060">Solved!</span>' : '';
+  el.innerHTML = `
+    <div style="font-size:.75rem;color:#6680aa;margin-bottom:5px">
+      Rating: ${p.rating} · ${p.done}/${p.total}${solved}
     </div>
     <div class="puzzle-progress">${dots.join('')}</div>`;
 }
 
-// ---------------------------------------------------------------------------
-// Move input
-// ---------------------------------------------------------------------------
-function handleSquareClick(sq) {
-  if (!state.at_latest) return;
-  if (state.status !== 'playing' && state.status !== 'check') return;
-  if (state.mode === 'ai_vs_ai') return;
-  if (state.mode === 'human_vs_ai' && !state.human_turn) return;
+async function fetchPuzzles() {
+  const data = await api('GET', '/puzzles');
+  if (!data) return;
+  document.getElementById('puzzle-list').innerHTML =
+    data.map(p => `
+      <div class="puzzle-item" onclick="loadPuzzle('${p.id}')">
+        <strong>★ ${p.rating}</strong> &nbsp; ${p.id}
+      </div>`).join('');
+}
 
-  // Close promo popup if open
+async function loadPuzzle(id) {
+  const s = await api('POST', `/puzzles/${id}`);
+  render(s);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Click-to-move
+// ─────────────────────────────────────────────────────────────────────
+function handleClick(sq) {
+  if (!S.at_latest) return;
+  if (S.live_status !== 'playing' && S.live_status !== 'check') return;
+  if (S.mode === 'ai_vs_ai') return;
+  if (!S.human_turn) return;
   document.getElementById('promo-popup').style.display = 'none';
-
   api('POST', '/select', {sq}).then(data => {
-    if (data && data.need_promotion) {
-      pendingPromo = {from_sq: data.from_sq, to_sq: data.to_sq};
+    if (!data) return;
+    if (data.need_promotion) {
+      pending = {from_sq: data.from_sq, to_sq: data.to_sq};
       document.getElementById('promo-popup').style.display = 'block';
     } else {
       render(data);
@@ -419,92 +595,90 @@ function handleSquareClick(sq) {
   });
 }
 
-function submitPromo(piece) {
-  if (!pendingPromo) return;
+function submitPromo(p) {
+  if (!pending) return;
   document.getElementById('promo-popup').style.display = 'none';
-  const uci = squareName(pendingPromo.from_sq) + squareName(pendingPromo.to_sq) + piece;
-  pendingPromo = null;
+  const uci = sqName(pending.from_sq) + sqName(pending.to_sq) + p;
+  pending = null;
   api('POST', '/move', {uci}).then(render);
 }
 
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
 // Controls
-// ---------------------------------------------------------------------------
-async function changeSetting(key, value) {
-  const data = await api('POST', '/settings', {[key]: value});
-  render(data);
+// ─────────────────────────────────────────────────────────────────────
+async function setSetting(key, val) {
+  render(await api('POST', '/settings', {[key]: val}));
 }
 
 async function newGame() {
-  const data = await api('POST', '/reset');
-  render(data);
-  // If human plays black, trigger AI first move
-  if (state.mode === 'human_vs_ai' && state.human_side === 'black') {
-    const d = await api('POST', '/ai_move');
-    render(d);
+  render(await api('POST', '/reset'));
+  if (S.mode === 'human_vs_ai' && S.human_side === 'black') {
+    render(await api('POST', '/ai_move'));
   }
 }
 
-async function resetBoard() {
-  const data = await api('POST', '/reset');
-  render(data);
+async function resetPos() {
+  render(await api('POST', '/reset'));
 }
 
-async function triggerAiMove() {
-  const data = await api('POST', '/ai_move');
-  render(data);
+async function triggerAi() {
+  render(await api('POST', '/ai_move'));
 }
 
-// ---------------------------------------------------------------------------
+async function importPosition() {
+  const text = document.getElementById('import-text').value.trim();
+  if (!text) return;
+  const s = await api('POST', '/import', {text});
+  render(s);
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Navigation
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
 async function navTo(idx) {
-  const data = await api('GET', `/history/${idx}`);
-  render(data);
+  render(await api('GET', `/history/${idx}`));
 }
-async function navRel(delta) {
-  const idx = Math.max(0, Math.min(state.history.length, state.history_idx + delta));
+async function navRel(d) {
+  const idx = Math.max(0, Math.min((S.history||[]).length, (S.history_idx||0) + d));
   await navTo(idx);
 }
 async function navLast() {
-  await navTo(state.history.length);
+  await navTo((S.history||[]).length);
 }
 
-// ---------------------------------------------------------------------------
-// Puzzle list
-// ---------------------------------------------------------------------------
-async function loadPuzzleList() {
-  const puzzles = await api('GET', '/puzzles');
-  if (!puzzles) return;
-  const list = document.getElementById('puzzle-list');
-  list.innerHTML = puzzles.map(p => `
-    <div class="puzzle-item" onclick="loadPuzzle('${p.id}')">
-      <strong>★ ${p.rating}</strong> — ${p.id}
-    </div>`).join('');
-}
+// ─────────────────────────────────────────────────────────────────────
+// Keyboard
+// ─────────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  const tag = document.activeElement.tagName.toLowerCase();
+  if (tag === 'textarea' || tag === 'input') return;
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); navRel(-1); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); navRel(1);  }
+  if (e.key === 'e' || e.key === 'E') {
+    const chk = document.getElementById('chk-engine');
+    chk.checked = !chk.checked;
+    setSetting('engine', chk.checked);
+  }
+  if (e.key === 'n' || e.key === 'N') { newGame(); }
+});
 
-async function loadPuzzle(id) {
-  const data = await api('POST', `/puzzles/${id}`);
-  render(data);
-  // Sync mode selector
-  document.getElementById('sel-mode').value = 'puzzle';
-}
-
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
 // Utilities
-// ---------------------------------------------------------------------------
-function squareName(sq) {
-  const files = 'abcdefgh';
-  return files[sq % 8] + (Math.floor(sq / 8) + 1);
+// ─────────────────────────────────────────────────────────────────────
+function sqName(sq) {
+  return 'abcdefgh'[sq % 8] + (Math.floor(sq / 8) + 1);
+}
+function fmtClock(s) {
+  s = +s;
+  if (s < 60)  return s + 's';
+  const m = Math.floor(s / 60), r = s % 60;
+  return r ? `${m}m${r}s` : `${m}m`;
 }
 
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
 // Init
-// ---------------------------------------------------------------------------
-(async () => {
-  const data = await api('GET', '/state');
-  render(data);
-})();
+// ─────────────────────────────────────────────────────────────────────
+(async () => { render(await api('GET', '/state')); })();
 </script>
 </body>
 </html>

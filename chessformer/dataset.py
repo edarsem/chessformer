@@ -47,7 +47,6 @@ class PositionDataset(Dataset):
         self.to_sq             = df["to_square_id"].to_list()
         self.promo             = df["promo_id"].to_list()
         self.elo_bucket        = df["elo_bucket"].to_list() if "elo_bucket" in df.columns else [""] * len(df)
-        self.fen               = df["fen"].to_list() if "fen" in df.columns else [""] * len(df)
 
     def __len__(self) -> int:
         return len(self.from_sq)
@@ -67,7 +66,6 @@ class PositionDataset(Dataset):
             "to_sq":          torch.tensor(self.to_sq[idx],             dtype=torch.long),
             "promo":          torch.tensor(self.promo[idx],             dtype=torch.long),
             "elo_bucket":     self.elo_bucket[idx],
-            "fen":            self.fen[idx],
         }
 
 
@@ -97,7 +95,6 @@ def collate_fn(batch: list[dict]) -> dict:
         "to_sq":          torch.stack([b["to_sq"]    for b in batch]),
         "promo":          torch.stack([b["promo"]    for b in batch]),
         "elo_bucket":     [b["elo_bucket"] for b in batch],
-        "fen":            [b["fen"]        for b in batch],
     }
 
 

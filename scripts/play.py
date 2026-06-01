@@ -235,13 +235,13 @@ def ai_vs_ai(
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
     ckpt_path   = cfg.get("checkpoint", None)
-    mode        = cfg.get("mode", "human_vs_ai")          # human_vs_ai | ai_vs_ai
-    human_side  = cfg.get("human_side", "white")          # white | black
-    ai_elo      = cfg.get("ai_elo", 2800)
-    white_elo   = cfg.get("white_elo", ai_elo)
-    black_elo   = cfg.get("black_elo", ai_elo)
+    mode        = cfg.get("mode", "human_vs_ai")
+    human_side  = cfg.get("human_side", "white")
+    ai_elo      = cfg.ai_elo
+    white_elo   = cfg.white_elo if cfg.white_elo is not None else ai_elo
+    black_elo   = cfg.black_elo if cfg.black_elo is not None else ai_elo
     temperature = float(cfg.get("temperature", 1.0))
-    display_mode = cfg.get("display", "ascii")             # ascii | svg
+    display_mode = cfg.get("display", "ascii")
 
     assert ckpt_path, "Pass checkpoint=<path>"
     assert mode in ("human_vs_ai", "ai_vs_ai"), "mode must be human_vs_ai or ai_vs_ai"

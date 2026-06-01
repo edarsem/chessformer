@@ -175,7 +175,6 @@ class PositionTokens:
     # Metadata (not fed to model; used for splits and per-bucket eval)
     game_id: str = ""
     elo_bucket: str = ""  # side-to-move's Elo bucket, e.g. "elo_1500"
-    fen: str = ""         # FEN of position before the move (for legality checks)
 
     @property
     def n_pieces(self) -> int:
@@ -279,7 +278,6 @@ def tokenize_position(
         promo_id=promo_id,
         game_id=game_id,
         elo_bucket=elo_bucket,
-        fen=fen,
     )
 
 

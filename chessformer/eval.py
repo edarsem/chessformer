@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Optional
 
-import chess
 import polars as pl
 import torch
 import torch.nn as nn
@@ -43,13 +42,12 @@ def eval_games(
     from_off = vocab.from_square_offset
     to_off   = vocab.to_square_offset
 
-    totals = defaultdict(lambda: {"loss": 0.0, "top1": 0, "top5": 0, "legal": 0, "n": 0})
+    totals = defaultdict(lambda: {"loss": 0.0, "top1": 0, "plausible": 0, "n": 0})
 
     for i, batch in enumerate(loader):
         if max_batches is not None and i >= max_batches:
             break
 
-        fens       = batch["fen"]
         elo_bkts   = batch["elo_bucket"]
         move_ids   = torch.stack([batch["from_sq"], batch["to_sq"], batch["promo"]], dim=1).to(device)
 
@@ -75,73 +73,35 @@ def eval_games(
         to_pred   = to_logits.argmax(-1)
         top1      = ((from_pred == from_target) & (to_pred == to_target))
 
-        # Top-5 independence approximation: target in top-5 of each marginal distribution
-        from_top5 = from_logits.topk(5, dim=-1).indices   # [B, 5]
-        to_top5   = to_logits.topk(5, dim=-1).indices     # [B, 5]
-        from_in5  = (from_top5 == from_target.unsqueeze(1)).any(dim=1)
-        to_in5    = (to_top5   == to_target.unsqueeze(1)).any(dim=1)
-        top5      = from_in5 & to_in5
+        # Plausible rate: correct move has >= 20% probability under each marginal
+        from_probs  = F.softmax(from_logits, dim=-1)                        # [B, 64]
+        to_probs    = F.softmax(to_logits,   dim=-1)                        # [B, 64]
+        from_p_gold = from_probs.gather(1, from_target.unsqueeze(1)).squeeze(1)  # [B]
+        to_p_gold   = to_probs.gather(1,   to_target.unsqueeze(1)).squeeze(1)    # [B]
+        plausible   = (from_p_gold >= 0.20) & (to_p_gold >= 0.20)
 
-        # Legal move rate — greedy move must be legal on the actual board
-        legal = _check_legal(
-            fens,
-            (from_pred + from_off).cpu().tolist(),
-            (to_pred   + to_off  ).cpu().tolist(),
-            batch["promo"].tolist(),
-            vocab,
-        )
-
-        B = len(fens)
+        B = len(elo_bkts)
         for b in range(B):
             bkt = elo_bkts[b]
             for key in ("all", bkt):
-                totals[key]["loss"]  += loss / B
-                totals[key]["top1"]  += int(top1[b].item())
-                totals[key]["top5"]  += int(top5[b].item())
-                totals[key]["legal"] += int(legal[b])
-                totals[key]["n"]     += 1
+                totals[key]["loss"]      += loss / B
+                totals[key]["top1"]      += int(top1[b].item())
+                totals[key]["plausible"] += int(plausible[b].item())
+                totals[key]["n"]         += 1
 
     def _agg(d: dict) -> dict:
         n = d["n"]
         return {
-            "loss":       d["loss"]  / n,
-            "top1_acc":   d["top1"]  / n,
-            "top5_acc":   d["top5"]  / n,
-            "legal_rate": d["legal"] / n,
-            "n":          n,
+            "loss":           d["loss"]      / n,
+            "top1_acc":       d["top1"]      / n,
+            "plausible_rate": d["plausible"] / n,
+            "n":              n,
         }
 
     result = _agg(totals["all"])
     result["per_elo"] = {k: _agg(v) for k, v in totals.items() if k != "all"}
     return result
 
-
-def _check_legal(
-    fens: list[str],
-    from_ids: list[int],
-    to_ids: list[int],
-    promos: list[int],
-    vocab: Vocab,
-) -> list[bool]:
-    """Check whether predicted moves are legal on their respective boards."""
-    results = []
-    for fen, f_id, t_id, promo_id in zip(fens, from_ids, to_ids, promos):
-        if not fen:
-            results.append(False)
-            continue
-        try:
-            board  = chess.Board(fen)
-            f_sq   = f_id - vocab.from_square_offset
-            t_sq   = t_id - vocab.to_square_offset
-            promo  = None
-            if promo_id >= vocab.promo_offset:
-                promo_local = promo_id - vocab.promo_offset
-                promo = [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN][promo_local]
-            move = chess.Move(f_sq, t_sq, promotion=promo)
-            results.append(board.is_legal(move))
-        except Exception:
-            results.append(False)
-    return results
 
 
 # ---------------------------------------------------------------------------

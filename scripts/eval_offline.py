@@ -63,18 +63,17 @@ def main(cfg: DictConfig) -> None:
     loader  = make_loader(games_path, batch_size=cfg.train.batch_size, shuffle=False)
     metrics = eval_games(model, loader, device, vocab)
 
-    print(f"\n  loss       {metrics['loss']:.4f}")
-    print(f"  top-1 acc  {metrics['top1_acc']:.3f}")
-    print(f"  top-5 acc  {metrics['top5_acc']:.3f}")
-    print(f"  legal rate {metrics['legal_rate']:.3f}")
-    print(f"  positions  {metrics['n']:,}")
+    print(f"\n  loss           {metrics['loss']:.4f}")
+    print(f"  top-1 acc      {metrics['top1_acc']:.3f}")
+    print(f"  plausible rate {metrics['plausible_rate']:.3f}  (p(correct move) >= 20%)")
+    print(f"  positions      {metrics['n']:,}")
 
     if metrics.get("per_elo"):
         print(f"\n  Per-Elo breakdown:")
         for bucket in sorted(metrics["per_elo"].keys()):
             m = metrics["per_elo"][bucket]
-            print(f"    {bucket:12s}  top1={m['top1_acc']:.3f}  top5={m['top5_acc']:.3f}"
-                  f"  legal={m['legal_rate']:.3f}  n={m['n']:,}")
+            print(f"    {bucket:12s}  top1={m['top1_acc']:.3f}"
+                  f"  plausible={m['plausible_rate']:.3f}  n={m['n']:,}")
 
     # --- Puzzles eval --------------------------------------------------------
     print(f"\n{'='*60}\nPuzzles ({split}): {puzzles_path}")
@@ -96,10 +95,9 @@ def main(cfg: DictConfig) -> None:
                 config  = OmegaConf.to_container(saved_cfg, resolve=True),
             )
             wandb.log({
-                f"{split}/games/loss":          metrics["loss"],
-                f"{split}/games/top1_acc":      metrics["top1_acc"],
-                f"{split}/games/top5_acc":      metrics["top5_acc"],
-                f"{split}/games/legal_rate":    metrics["legal_rate"],
+                f"{split}/games/loss":            metrics["loss"],
+                f"{split}/games/top1_acc":        metrics["top1_acc"],
+                f"{split}/games/plausible_rate":  metrics["plausible_rate"],
                 f"{split}/puzzles/loss":        pm["loss"],
                 f"{split}/puzzles/accuracy":    pm["accuracy"],
                 f"{split}/puzzles/advancement": pm["advancement"],

@@ -17,5 +17,10 @@ wandb>=0.17.0
 # Terminal / display
 rich>=13.0.0
 
+# Web UI
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
 # Notebook
 ipykernel>=6.0.0

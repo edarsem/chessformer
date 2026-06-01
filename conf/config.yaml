@@ -24,3 +24,4 @@ white_elo: null   # defaults to ai_elo if null
 black_elo: null   # defaults to ai_elo if null
 temperature: 1.0
 display: ascii
+port: 5174

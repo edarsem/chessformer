@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chessformer</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #1a1a2e; color: #e0e0e0; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; padding: 20px;
+  }
+  h1 { font-size: 1.4rem; letter-spacing: 0.05em; color: #a0c4ff; margin-bottom: 16px; }
+  .main { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; justify-content: center; }
+
+  /* Board area */
+  .board-area { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  #board-wrap {
+    position: relative; width: 480px; height: 480px;
+    border: 2px solid #333; border-radius: 4px; overflow: hidden;
+    cursor: pointer;
+  }
+  #board-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+  #board-svg svg { width: 100%; height: 100%; }
+
+  /* Click overlay: 8×8 grid */
+  #board-overlay {
+    position: absolute; top: 0; left: 0; width: 480px; height: 480px;
+    display: grid; grid-template-columns: repeat(8, 60px); grid-template-rows: repeat(8, 60px);
+  }
+  .sq { width: 60px; height: 60px; cursor: pointer; }
+  .sq:hover { background: rgba(255,255,255,0.08); }
+
+  /* Promotion popup */
+  #promo-popup {
+    display: none; position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    background: #2a2a4a; border: 2px solid #555; border-radius: 8px;
+    padding: 16px; z-index: 10; text-align: center;
+  }
+  #promo-popup p { margin-bottom: 10px; font-size: 0.9rem; }
+  .promo-btn {
+    background: #3a3a5a; border: 1px solid #666; color: #e0e0e0;
+    padding: 8px 14px; margin: 4px; border-radius: 4px; cursor: pointer; font-size: 1.2rem;
+  }
+  .promo-btn:hover { background: #5a5a8a; }
+
+  /* Nav + status */
+  .nav-row { display: flex; align-items: center; gap: 12px; }
+  .nav-btn {
+    background: #2a2a4a; border: 1px solid #444; color: #ccc;
+    padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 1rem;
+  }
+  .nav-btn:hover { background: #3a3a5a; }
+  .nav-btn:disabled { opacity: 0.35; cursor: default; }
+  #move-label { font-size: 0.85rem; color: #aaa; min-width: 120px; text-align: center; }
+  #status-label { font-size: 0.85rem; font-weight: 600; color: #ffd700; }
+
+  /* Right panel */
+  .panel { width: 280px; display: flex; flex-direction: column; gap: 16px; }
+  .card {
+    background: #22223b; border: 1px solid #333; border-radius: 8px; padding: 14px;
+  }
+  .card h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: #888; margin-bottom: 12px; }
+
+  label { font-size: 0.82rem; color: #bbb; display: block; margin-bottom: 4px; }
+  input[type=range] { width: 100%; accent-color: #a0c4ff; margin-bottom: 8px; }
+  .val-display { font-size: 0.8rem; color: #a0c4ff; float: right; }
+
+  select, .btn {
+    width: 100%; padding: 7px 10px; border-radius: 5px; border: 1px solid #444;
+    background: #2a2a4a; color: #e0e0e0; font-size: 0.85rem; cursor: pointer;
+    margin-bottom: 6px;
+  }
+  .btn:hover { background: #3a3a5a; }
+  .btn-primary { background: #1a5276; border-color: #2e86c1; }
+  .btn-primary:hover { background: #2874a6; }
+  .btn-danger { background: #5d1212; border-color: #922b21; }
+  .btn-danger:hover { background: #7b241c; }
+
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .toggle-row label { margin: 0; }
+  input[type=checkbox] { accent-color: #a0c4ff; width: 16px; height: 16px; cursor: pointer; }
+
+  /* Debug panel */
+  #debug-panel { display: none; }
+  .prob-bar-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .prob-bar-label { font-size: 0.72rem; color: #aaa; width: 30px; flex-shrink: 0; }
+  .prob-bar-bg { flex: 1; height: 12px; background: #1a1a2e; border-radius: 3px; overflow: hidden; }
+  .prob-bar-fill { height: 100%; border-radius: 3px; }
+  .prob-bar-val { font-size: 0.72rem; color: #aaa; width: 40px; text-align: right; flex-shrink: 0; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+  th { color: #888; text-align: left; padding: 3px 6px; font-weight: normal; }
+  td { padding: 3px 6px; }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.03); }
+
+  /* Puzzle panel */
+  #puzzle-panel { display: none; }
+  .puzzle-progress { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+  .puzzle-dot {
+    width: 20px; height: 20px; border-radius: 50%; border: 1px solid #555;
+    display: flex; align-items: center; justify-content: center; font-size: 0.7rem;
+  }
+  .dot-pending  { background: #333; }
+  .dot-correct  { background: #1a6b1a; border-color: #2ecc71; color: #2ecc71; }
+  .dot-wrong    { background: #6b1a1a; border-color: #e74c3c; color: #e74c3c; }
+  .dot-current  { background: #1a3a6b; border-color: #3498db; }
+
+  .puzzle-list { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+  .puzzle-item {
+    padding: 7px 10px; background: #2a2a4a; border-radius: 5px; cursor: pointer;
+    border: 1px solid #333; font-size: 0.82rem;
+  }
+  .puzzle-item:hover { background: #3a3a5a; }
+
+  /* Spinner */
+  #spinner {
+    display: none; position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%); font-size: 2rem; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<h1>Chessformer</h1>
+
+<div class="main">
+  <!-- Board -->
+  <div class="board-area">
+    <div id="board-wrap">
+      <div id="board-svg"></div>
+      <div id="board-overlay"></div>
+      <div id="promo-popup">
+        <p>Promote to:</p>
+        <button class="promo-btn" onclick="submitPromo('q')">♛</button>
+        <button class="promo-btn" onclick="submitPromo('r')">♜</button>
+        <button class="promo-btn" onclick="submitPromo('b')">♝</button>
+        <button class="promo-btn" onclick="submitPromo('n')">♞</button>
+      </div>
+    </div>
+    <div class="nav-row">
+      <button class="nav-btn" id="btn-first"  onclick="navTo(0)">⏮</button>
+      <button class="nav-btn" id="btn-prev"   onclick="navRel(-1)">◀</button>
+      <span id="move-label">—</span>
+      <button class="nav-btn" id="btn-next"   onclick="navRel(1)">▶</button>
+      <button class="nav-btn" id="btn-last"   onclick="navLast()">⏭</button>
+    </div>
+    <div id="status-label"></div>
+  </div>
+
+  <!-- Right panel -->
+  <div class="panel">
+
+    <!-- Controls -->
+    <div class="card">
+      <h3>Controls</h3>
+
+      <label>Mode</label>
+      <select id="sel-mode" onchange="changeSetting('mode', this.value)">
+        <option value="human_vs_ai">Human vs AI</option>
+        <option value="ai_vs_ai">AI vs AI</option>
+        <option value="puzzle">Puzzle</option>
+      </select>
+
+      <div id="side-row">
+        <label>You play as</label>
+        <select id="sel-side" onchange="changeSetting('human_side', this.value)">
+          <option value="white">White</option>
+          <option value="black">Black</option>
+        </select>
+      </div>
+
+      <label>
+        White Elo <span class="val-display" id="white-elo-val">2800</span>
+      </label>
+      <input type="range" id="sl-white-elo" min="800" max="3400" step="100" value="2800"
+             oninput="document.getElementById('white-elo-val').textContent=this.value"
+             onchange="changeSetting('white_elo', parseInt(this.value))">
+
+      <label>
+        Black Elo <span class="val-display" id="black-elo-val">2800</span>
+      </label>
+      <input type="range" id="sl-black-elo" min="800" max="3400" step="100" value="2800"
+             oninput="document.getElementById('black-elo-val').textContent=this.value"
+             onchange="changeSetting('black_elo', parseInt(this.value))">
+
+      <div class="toggle-row">
+        <label>Argmax (greedy)</label>
+        <input type="checkbox" id="chk-argmax" checked onchange="changeSetting('argmax', this.checked)">
+      </div>
+
+      <div id="temp-row">
+        <label>
+          Temperature <span class="val-display" id="temp-val">1.0</span>
+        </label>
+        <input type="range" id="sl-temp" min="0.1" max="2.0" step="0.1" value="1.0"
+               oninput="document.getElementById('temp-val').textContent=parseFloat(this.value).toFixed(1)"
+               onchange="changeSetting('temperature', parseFloat(this.value))">
+      </div>
+
+      <div class="toggle-row">
+        <label>Debug mode</label>
+        <input type="checkbox" id="chk-debug" onchange="changeSetting('debug', this.checked)">
+      </div>
+
+      <div style="display:flex; gap:6px; margin-top:6px;">
+        <button class="btn btn-primary" style="flex:1" onclick="newGame()">New Game</button>
+        <button class="btn btn-danger"  style="flex:1" onclick="resetBoard()">Reset</button>
+      </div>
+      <button class="btn" id="btn-ai-move" onclick="triggerAiMove()" style="display:none">
+        AI Move ▶
+      </button>
+    </div>
+
+    <!-- Debug panel -->
+    <div class="card" id="debug-panel">
+      <h3>Model Debug</h3>
+      <p style="font-size:0.78rem; color:#888; margin-bottom:8px;">From-square probabilities (top 5)</p>
+      <div id="from-bars"></div>
+      <p style="font-size:0.78rem; color:#888; margin:8px 0;">Top 5 moves</p>
+      <table>
+        <thead><tr><th>From</th><th>To</th><th>Prob</th></tr></thead>
+        <tbody id="top-moves-body"></tbody>
+      </table>
+    </div>
+
+    <!-- Puzzle panel -->
+    <div class="card" id="puzzle-panel">
+      <h3>Puzzles</h3>
+      <div id="puzzle-progress-area" style="margin-bottom:10px;"></div>
+      <button class="btn" onclick="loadPuzzleList()">Load New Puzzles</button>
+      <div class="puzzle-list" id="puzzle-list"></div>
+    </div>
+
+  </div>
+</div>
+
+<div id="spinner">⏳</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let state = {};
+let pendingPromo = null;  // {from_sq, to_sq} when promotion choice needed
+
+// ---------------------------------------------------------------------------
+// API helpers
+// ---------------------------------------------------------------------------
+function spin(on) { document.getElementById('spinner').style.display = on ? 'block' : 'none'; }
+
+async function api(method, path, body) {
+  spin(true);
+  try {
+    const opts = { method, headers: {'Content-Type': 'application/json'} };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    const r = await fetch(path, opts);
+    const data = await r.json();
+    if (!r.ok) { alert(data.detail || 'Error'); return null; }
+    return data;
+  } finally { spin(false); }
+}
+
+// ---------------------------------------------------------------------------
+// Render
+// ---------------------------------------------------------------------------
+function render(s) {
+  if (!s) return;
+  state = s;
+
+  // Board SVG
+  document.getElementById('board-svg').innerHTML = s.svg;
+
+  // Rebuild overlay grid
+  buildOverlay(s.flipped, s.sq_size);
+
+  // Status
+  const statusEl = document.getElementById('status-label');
+  const statusMsg = {
+    'checkmate': '♚ Checkmate!', 'stalemate': '½ Stalemate', 'draw': '½ Draw',
+    'check': '+ Check!', 'playing': ''
+  };
+  statusEl.textContent = statusMsg[s.status] || s.status;
+
+  // Move label
+  const n = s.history.length;
+  const idx = s.history_idx;
+  document.getElementById('move-label').textContent =
+    n === 0 ? 'Start' : `Move ${Math.ceil(idx/2)} / ${Math.ceil(n/2)}`;
+
+  // Nav buttons
+  document.getElementById('btn-first').disabled = idx === 0;
+  document.getElementById('btn-prev').disabled  = idx === 0;
+  document.getElementById('btn-next').disabled  = idx >= n;
+  document.getElementById('btn-last').disabled  = idx >= n;
+
+  // Sync controls
+  document.getElementById('sel-mode').value   = s.mode;
+  document.getElementById('sel-side').value   = s.human_side;
+  document.getElementById('sl-white-elo').value = s.white_elo;
+  document.getElementById('white-elo-val').textContent = s.white_elo;
+  document.getElementById('sl-black-elo').value = s.black_elo;
+  document.getElementById('black-elo-val').textContent = s.black_elo;
+  document.getElementById('sl-temp').value = s.temperature;
+  document.getElementById('temp-val').textContent = s.temperature.toFixed(1);
+  document.getElementById('chk-argmax').checked = s.argmax;
+  document.getElementById('chk-debug').checked  = s.debug;
+
+  // Side row visibility
+  document.getElementById('side-row').style.display =
+    s.mode === 'human_vs_ai' ? '' : 'none';
+
+  // AI Move button (ai_vs_ai mode, at latest position, not game over)
+  const showAiBtn = s.mode === 'ai_vs_ai' && s.at_latest && s.status === 'playing';
+  document.getElementById('btn-ai-move').style.display = showAiBtn ? '' : 'none';
+
+  // Debug panel
+  const debugPanel = document.getElementById('debug-panel');
+  debugPanel.style.display = s.debug ? '' : 'none';
+  if (s.debug && s.debug_info) renderDebug(s.debug_info);
+
+  // Puzzle panel
+  const puzzlePanel = document.getElementById('puzzle-panel');
+  puzzlePanel.style.display = s.mode === 'puzzle' ? '' : 'none';
+  if (s.mode === 'puzzle') renderPuzzleProgress(s.puzzle);
+
+  // Temp slider visibility
+  document.getElementById('temp-row').style.display = s.argmax ? 'none' : '';
+}
+
+function buildOverlay(flipped, sqSize) {
+  const overlay = document.getElementById('board-overlay');
+  overlay.innerHTML = '';
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      // Map (row, col) of the visual grid to chess square index
+      // row 0 = top of displayed board
+      // White perspective: top = rank 7, bottom = rank 0
+      const rank = flipped ? row : 7 - row;
+      const file = flipped ? 7 - col : col;
+      const sq = rank * 8 + file;
+      const div = document.createElement('div');
+      div.className = 'sq';
+      div.dataset.sq = sq;
+      div.addEventListener('click', () => handleSquareClick(sq));
+      overlay.appendChild(div);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Debug rendering
+// ---------------------------------------------------------------------------
+function renderDebug(info) {
+  // From-square top-5 bars
+  const fromBars = document.getElementById('from-bars');
+  const fromProbs = info.from_probs;
+  const top5From = fromProbs
+    .map((p, i) => ({sq: i, p}))
+    .sort((a,b) => b.p - a.p)
+    .slice(0, 5);
+  fromBars.innerHTML = top5From.map(({sq, p}) => `
+    <div class="prob-bar-row">
+      <span class="prob-bar-label">${squareName(sq)}</span>
+      <div class="prob-bar-bg">
+        <div class="prob-bar-fill" style="width:${(p*100).toFixed(1)}%;background:#3a8fd4"></div>
+      </div>
+      <span class="prob-bar-val">${(p*100).toFixed(1)}%</span>
+    </div>`).join('');
+
+  // Top moves table
+  const tbody = document.getElementById('top-moves-body');
+  tbody.innerHTML = info.top_moves.map(m => `
+    <tr>
+      <td>${squareName(m.from)}</td>
+      <td>${squareName(m.to)}</td>
+      <td>${(m.prob*100).toFixed(1)}%</td>
+    </tr>`).join('');
+}
+
+function renderPuzzleProgress(puzzle) {
+  const area = document.getElementById('puzzle-progress-area');
+  if (!puzzle) { area.innerHTML = ''; return; }
+  const dots = [];
+  for (let i = 0; i < puzzle.total; i++) {
+    let cls = 'dot-pending', txt = '';
+    if (i < puzzle.done)         { cls = 'dot-correct'; txt = '✓'; }
+    else if (i === puzzle.done)  { cls = 'dot-current'; }
+    dots.push(`<div class="puzzle-dot ${cls}">${txt}</div>`);
+  }
+  const solved = puzzle.solved ? ' <span style="color:#2ecc71">Solved!</span>' : '';
+  area.innerHTML = `
+    <div style="font-size:0.8rem;color:#888;margin-bottom:6px">
+      Rating: ${puzzle.rating} | ${puzzle.done}/${puzzle.total} moves${solved}
+    </div>
+    <div class="puzzle-progress">${dots.join('')}</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Move input
+// ---------------------------------------------------------------------------
+function handleSquareClick(sq) {
+  if (!state.at_latest) return;
+  if (state.status !== 'playing' && state.status !== 'check') return;
+  if (state.mode === 'ai_vs_ai') return;
+  if (state.mode === 'human_vs_ai' && !state.human_turn) return;
+
+  // Close promo popup if open
+  document.getElementById('promo-popup').style.display = 'none';
+
+  api('POST', '/select', {sq}).then(data => {
+    if (data && data.need_promotion) {
+      pendingPromo = {from_sq: data.from_sq, to_sq: data.to_sq};
+      document.getElementById('promo-popup').style.display = 'block';
+    } else {
+      render(data);
+    }
+  });
+}
+
+function submitPromo(piece) {
+  if (!pendingPromo) return;
+  document.getElementById('promo-popup').style.display = 'none';
+  const uci = squareName(pendingPromo.from_sq) + squareName(pendingPromo.to_sq) + piece;
+  pendingPromo = null;
+  api('POST', '/move', {uci}).then(render);
+}
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+async function changeSetting(key, value) {
+  const data = await api('POST', '/settings', {[key]: value});
+  render(data);
+}
+
+async function newGame() {
+  const data = await api('POST', '/reset');
+  render(data);
+  // If human plays black, trigger AI first move
+  if (state.mode === 'human_vs_ai' && state.human_side === 'black') {
+    const d = await api('POST', '/ai_move');
+    render(d);
+  }
+}
+
+async function resetBoard() {
+  const data = await api('POST', '/reset');
+  render(data);
+}
+
+async function triggerAiMove() {
+  const data = await api('POST', '/ai_move');
+  render(data);
+}
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+async function navTo(idx) {
+  const data = await api('GET', `/history/${idx}`);
+  render(data);
+}
+async function navRel(delta) {
+  const idx = Math.max(0, Math.min(state.history.length, state.history_idx + delta));
+  await navTo(idx);
+}
+async function navLast() {
+  await navTo(state.history.length);
+}
+
+// ---------------------------------------------------------------------------
+// Puzzle list
+// ---------------------------------------------------------------------------
+async function loadPuzzleList() {
+  const puzzles = await api('GET', '/puzzles');
+  if (!puzzles) return;
+  const list = document.getElementById('puzzle-list');
+  list.innerHTML = puzzles.map(p => `
+    <div class="puzzle-item" onclick="loadPuzzle('${p.id}')">
+      <strong>★ ${p.rating}</strong> — ${p.id}
+    </div>`).join('');
+}
+
+async function loadPuzzle(id) {
+  const data = await api('POST', `/puzzles/${id}`);
+  render(data);
+  // Sync mode selector
+  document.getElementById('sel-mode').value = 'puzzle';
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+function squareName(sq) {
+  const files = 'abcdefgh';
+  return files[sq % 8] + (Math.floor(sq / 8) + 1);
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+(async () => {
+  const data = await api('GET', '/state');
+  render(data);
+})();
+</script>
+</body>
+</html>

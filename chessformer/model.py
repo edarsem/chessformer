@@ -367,6 +367,52 @@ class ChessformerModel(nn.Module):
 
         return from_ids, to_ids, promo_ids
 
+    @torch.no_grad()
+    def get_move_probs(
+        self,
+        meta_ids:       torch.Tensor,
+        color_ids:      torch.Tensor,
+        piece_type_ids: torch.Tensor,
+        file_ids:       torch.Tensor,
+        rank_ids:       torch.Tensor,
+        white_elo:      torch.Tensor,
+        black_elo:      torch.Tensor,
+        white_clock_s:  torch.Tensor,
+        black_clock_s:  torch.Tensor,
+    ) -> dict:
+        """Return from/to probability distributions for debug display.
+
+        Uses greedy from-square for the to-distribution (single forward pass each).
+        Returns CPU tensors.
+        """
+        device = meta_ids.device
+        board  = (meta_ids, color_ids, piece_type_ids, file_ids, rank_ids,
+                  white_elo, black_elo, white_clock_s, black_clock_s)
+        dummy = torch.zeros(1, 3, dtype=torch.long, device=device)
+
+        from_logits, _, _ = self.forward(*board, dummy)
+        from_probs = F.softmax(from_logits[0], dim=-1).cpu()  # [64]
+
+        best_from = int(from_probs.argmax())
+        dummy2 = dummy.clone()
+        dummy2[0, 0] = best_from + self.vocab.from_square_offset
+        _, to_logits, _ = self.forward(*board, dummy2)
+        to_probs = F.softmax(to_logits[0], dim=-1).cpu()  # [64]
+
+        # Top-5 joint moves (from_prob[i] * to_prob_greedy[j])
+        joint = (from_probs.unsqueeze(1) * to_probs.unsqueeze(0)).flatten()
+        top5 = joint.topk(5)
+        top_moves = [
+            {"from": int(idx // 64), "to": int(idx % 64), "prob": float(joint[idx])}
+            for idx in top5.indices
+        ]
+
+        return {
+            "from_probs": from_probs.tolist(),
+            "to_probs":   to_probs.tolist(),
+            "top_moves":  top_moves,
+        }
+
 
 def _sample_logits(logits: torch.Tensor, temperature: float) -> torch.Tensor:
     if temperature == 0.0:

@@ -242,6 +242,10 @@ class ChessformerModel(nn.Module):
         # then move to device. All ops are torch vectorized — no Python loops.
         mask_cpu = torch.zeros(B, 1, T, T, dtype=dtype)
 
+        # Board positions must not attend to move suffix — otherwise board representations
+        # get contaminated with the ground-truth from/to tokens and MOVE_BOS can read them off.
+        mask_cpu[:, :, :board_len, board_len:] = float('-inf')
+
         # Causal upper triangle for move suffix — broadcasts over B and the single head dim
         mask_cpu[:, :, board_len:, board_len:] = torch.triu(
             torch.full((self.N_MOVE_STEPS, self.N_MOVE_STEPS), float('-inf')), diagonal=1,

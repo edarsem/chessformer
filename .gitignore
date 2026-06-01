@@ -9,3 +9,4 @@ CLAUDE.md
 outputs/
 .vscode/
 checkpoints/
+wandb/

@@ -1,3 +1,6 @@
+# Which data.* key to use for training (override for smoke tests)
+train_file: train_games_small_file   # or train_games_tiny_file
+
 batch_size: 256
 max_steps: 50000
 lr: 1e-3
@@ -8,6 +11,7 @@ grad_clip: 1.0
 
 # Validation and checkpointing
 val_every: 500         # steps
+val_max_batches: 200   # cap val batches per eval (null = full val set)
 checkpoint_every: 2000 # steps
 
 # Mixed precision (autocast). GradScaler only activates on CUDA.

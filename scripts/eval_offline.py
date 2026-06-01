@@ -1,42 +1,112 @@
 """
 scripts/eval_offline.py
 
-Run offline evaluation on a trained checkpoint against val or test sets.
+Offline evaluation against val or test splits.
 
 Usage:
-    python scripts/eval_offline.py checkpoint=checkpoints/step_10000.pt
-    python scripts/eval_offline.py checkpoint=... split=test
+    python scripts/eval_offline.py checkpoint=checkpoints/step_XXXXXXX.pt
+    python scripts/eval_offline.py checkpoint=... split=test data=local
 
-Metrics reported:
-
-  Games (per Elo bucket + aggregate):
-    - top1_accuracy: exact (from, to) match
-    - top5_accuracy: correct move in top-5
-    - legal_rate: % of argmax moves that are legal
-
-  Puzzles (always conditioned on GM Elo):
-    - move1_accuracy: first solution move correct
-    - full_solve_rate: entire solution correct
-    - loss: cross-entropy averaged over solution positions
-
-Results are printed to stdout and optionally logged to W&B.
+Results are printed to stdout. Optionally logged to W&B if cfg.wandb.enabled.
 """
 
+from __future__ import annotations
+
+import os
+import sys
+
 import hydra
-from omegaconf import DictConfig
+import torch
+from omegaconf import DictConfig, OmegaConf
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from chessformer.dataset import make_loader
+from chessformer.eval import eval_games, eval_puzzles
+from chessformer.model import ChessformerModel
+from chessformer.tokenizer import build_vocab
 
 
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
-    # TODO Phase 5: implement
-    # Steps:
-    #   1. Load checkpoint + rebuild model with saved config
-    #   2. Load val or test parquet (games + puzzles)
-    #   3. Run chessformer.eval.eval_games() → per-bucket metrics dict
-    #   4. Run chessformer.eval.eval_puzzles() → puzzle metrics dict
-    #   5. Pretty-print results with rich.table
-    #   6. Optionally log to W&B
-    raise NotImplementedError("Phase 5: eval_offline.py not yet implemented")
+    ckpt_path = cfg.get("checkpoint", None)
+    split     = cfg.get("split", "val")
+    assert ckpt_path, "Pass checkpoint=<path> on the command line."
+    assert split in ("val", "test"), "split must be 'val' or 'test'"
+
+    device = torch.device(
+        "cuda" if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available()
+        else "cpu"
+    )
+    print(f"Device: {device}  |  Checkpoint: {ckpt_path}  |  Split: {split}")
+
+    ckpt = torch.load(ckpt_path, map_location=device)
+    saved_cfg = OmegaConf.create(ckpt["cfg"])
+
+    vocab = build_vocab()
+    model = ChessformerModel(vocab, saved_cfg.model).to(device)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+    step = ckpt.get("step", 0)
+    print(f"Loaded model at step {step}  ({sum(p.numel() for p in model.parameters()):,} params)")
+
+    if split == "val":
+        games_path   = cfg.data.val_games_file
+        puzzles_path = cfg.data.val_puzzles_file
+    else:
+        games_path   = cfg.data.test_games_file
+        puzzles_path = cfg.data.test_puzzles_file
+
+    # --- Games eval ----------------------------------------------------------
+    print(f"\n{'='*60}\nGames ({split}): {games_path}")
+    loader  = make_loader(games_path, batch_size=cfg.train.batch_size, shuffle=False)
+    metrics = eval_games(model, loader, device, vocab)
+
+    print(f"\n  loss       {metrics['loss']:.4f}")
+    print(f"  top-1 acc  {metrics['top1_acc']:.3f}")
+    print(f"  top-5 acc  {metrics['top5_acc']:.3f}")
+    print(f"  legal rate {metrics['legal_rate']:.3f}")
+    print(f"  positions  {metrics['n']:,}")
+
+    if metrics.get("per_elo"):
+        print(f"\n  Per-Elo breakdown:")
+        for bucket in sorted(metrics["per_elo"].keys()):
+            m = metrics["per_elo"][bucket]
+            print(f"    {bucket:12s}  top1={m['top1_acc']:.3f}  top5={m['top5_acc']:.3f}"
+                  f"  legal={m['legal_rate']:.3f}  n={m['n']:,}")
+
+    # --- Puzzles eval --------------------------------------------------------
+    print(f"\n{'='*60}\nPuzzles ({split}): {puzzles_path}")
+    pm = eval_puzzles(model, puzzles_path, device, vocab)
+
+    print(f"\n  loss        {pm['loss']:.4f}")
+    print(f"  accuracy    {pm['accuracy']:.3f}  (all moves correct)")
+    print(f"  advancement {pm['advancement']:.3f}  (macro avg fraction solved)")
+    print(f"  puzzles     {pm['n_puzzles']:,}")
+
+    # --- W&B -----------------------------------------------------------------
+    if cfg.wandb.enabled:
+        try:
+            import wandb
+            wandb.init(
+                project = cfg.wandb.project,
+                entity  = cfg.wandb.get("entity", None),
+                name    = f"eval_{split}_step{step}",
+                config  = OmegaConf.to_container(saved_cfg, resolve=True),
+            )
+            wandb.log({
+                f"{split}/games/loss":          metrics["loss"],
+                f"{split}/games/top1_acc":      metrics["top1_acc"],
+                f"{split}/games/top5_acc":      metrics["top5_acc"],
+                f"{split}/games/legal_rate":    metrics["legal_rate"],
+                f"{split}/puzzles/loss":        pm["loss"],
+                f"{split}/puzzles/accuracy":    pm["accuracy"],
+                f"{split}/puzzles/advancement": pm["advancement"],
+            }, step=step)
+            wandb.finish()
+        except ImportError:
+            print("wandb not installed — skipping W&B logging")
 
 
 if __name__ == "__main__":

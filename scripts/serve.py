@@ -92,7 +92,11 @@ def _active_board() -> chess.Board:
     return b
 
 def _flipped() -> bool:
-    return _state.mode == "human_vs_ai" and _state.human_side == "black"
+    if _state.mode == "human_vs_ai":
+        return _state.human_side == "black"
+    if _state.mode == "puzzle":
+        return _state.board.turn == chess.BLACK
+    return False
 
 def _render_svg(
     board: chess.Board,
@@ -105,9 +109,6 @@ def _render_svg(
 
     if selected_sq is not None:
         fill[selected_sq] = "#ffff4488"
-        for mv in board.legal_moves:
-            if mv.from_square == selected_sq:
-                fill[mv.to_square] = "#88ff8844"
 
     if probs and _state.engine:
         from_probs = probs["from_probs"]
@@ -293,8 +294,8 @@ def _full_state_json(probs: Optional[dict] = None) -> dict:
     human_color = chess.WHITE if _state.human_side == "white" else chess.BLACK
     human_turn  = (
         at_latest and not live_board.is_game_over() and
-        _state.mode in ("human_vs_ai", "human_vs_human") and
-        (_state.mode == "human_vs_human" or live_board.turn == human_color)
+        _state.mode in ("human_vs_ai", "human_vs_human", "puzzle") and
+        (_state.mode in ("human_vs_human", "puzzle") or live_board.turn == human_color)
     )
     puzzle_status = None
     if _state.mode == "puzzle" and _state.puzzle_moves:

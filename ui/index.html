@@ -334,6 +334,7 @@ kbd {
     <div id="status-bar"></div>
     <div class="kbd-hint">
       <kbd>←</kbd><kbd>→</kbd> navigate &nbsp;
+      <kbd>M</kbd> AI move &nbsp;
       <kbd>E</kbd> engine &nbsp;
       <kbd>N</kbd> new game
     </div>
@@ -479,8 +480,9 @@ function render(s) {
   document.getElementById('side-row').style.display =
     s.mode === 'human_vs_ai' ? '' : 'none';
   document.getElementById('temp-row').style.display = s.argmax ? 'none' : '';
+  const gameOver = ['checkmate','stalemate','draw'].includes(s.live_status);
   document.getElementById('btn-ai').style.display =
-    (s.mode === 'ai_vs_ai' && s.at_latest && s.live_status === 'playing') ? '' : 'none';
+    (s.mode === 'ai_vs_ai' && s.at_latest && !gameOver) ? '' : 'none';
 
   // Engine panel
   document.getElementById('engine-panel').style.display = s.engine ? '' : 'none';
@@ -660,6 +662,10 @@ document.addEventListener('keydown', e => {
     setSetting('engine', chk.checked);
   }
   if (e.key === 'n' || e.key === 'N') { newGame(); }
+  if (e.key === 'm' || e.key === 'M') {
+    const btn = document.getElementById('btn-ai');
+    if (btn.style.display !== 'none') triggerAi();
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────

@@ -13,3 +13,14 @@ wandb:
   project: chessformer
   entity: null   # override via env WANDB_ENTITY or CLI
   enabled: true
+
+# Overridable at CLI for eval and play scripts
+checkpoint: null
+split: val
+mode: human_vs_ai
+human_side: white
+ai_elo: 2800
+white_elo: null   # defaults to ai_elo if null
+black_elo: null   # defaults to ai_elo if null
+temperature: 1.0
+display: ascii

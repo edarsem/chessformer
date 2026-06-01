@@ -107,27 +107,16 @@ class Trainer:
                 sps     = log_every / elapsed  # steps per second
                 print(
                     f"step {step:6d} | loss {metrics['loss']:.4f} "
-                    f"| from {metrics['from_loss']:.4f} | to {metrics['to_loss']:.4f} "
                     f"| gnorm {metrics['grad_norm']:.3f} | lr {lr:.2e} "
-                    f"| {sps:.1f} steps/s  "
-                    f"[data {t_data*1000/log_every:.1f}ms  "
-                    f"fwd {t_forward*1000/log_every:.1f}ms  "
-                    f"bwd {t_backward*1000/log_every:.1f}ms  "
-                    f"opt {t_opt*1000/log_every:.1f}ms]",
+                    f"| {sps:.1f} steps/s",
                     flush=True,
                 )
                 if self._wandb:
                     self._wandb.log({
                         "train/loss":       metrics["loss"],
-                        "train/from_loss":  metrics["from_loss"],
-                        "train/to_loss":    metrics["to_loss"],
                         "train/grad_norm":  metrics["grad_norm"],
                         "train/lr":         lr,
                         "perf/steps_per_s": sps,
-                        "perf/ms_data":     t_data     * 1000 / log_every,
-                        "perf/ms_forward":  t_forward  * 1000 / log_every,
-                        "perf/ms_backward": t_backward * 1000 / log_every,
-                        "perf/ms_opt":      t_opt      * 1000 / log_every,
                     }, step=step)
                 t_data = t_forward = t_backward = t_opt = 0.0
                 t_wall = time.perf_counter()
@@ -138,13 +127,11 @@ class Trainer:
                 t_val       = time.perf_counter() - t_val0
                 self.model.train()
                 if self.is_main:
+                    val_metrics.pop('t_data'); val_metrics.pop('t_fwd')
                     print(
                         f"  [val] loss {val_metrics['loss']:.4f} "
-                        f"| from_acc {val_metrics['from_acc']:.3f} "
-                        f"| to_acc {val_metrics['to_acc']:.3f} "
-                        f"| joint_acc {val_metrics['joint_acc']:.3f} "
-                        f"| val_time {t_val:.1f}s "
-                        f"[data {val_metrics.pop('t_data'):.1f}s  fwd {val_metrics.pop('t_fwd'):.1f}s]",
+                        f"| acc {val_metrics['joint_acc']:.3f} "
+                        f"| {t_val:.1f}s",
                         flush=True,
                     )
                     if self._wandb:

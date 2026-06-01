@@ -18,6 +18,7 @@ Sequence layout fed to the transformer (all as embeddings):
 Attention:
   - Board prefix [w_elo .. pieces]: fully bidirectional
   - Move suffix  [MOVE_BOS .. to_in]: causal (sees all board + earlier move tokens)
+  - Board positions cannot attend to move suffix (prevents reading ground-truth labels)
   - Padded positions: masked out
 
 Max sequence length: 4 + 7 + 32 + 3 = 46
@@ -27,6 +28,10 @@ Output heads at move positions:
   MOVE_BOS → from_logits  [B, 64]
   from_in  → to_logits    [B, 64]
   to_in    → promo_logits [B, 4]
+
+Device notes:
+  MPS:  mask built on CPU then moved to avoid MPS -inf arithmetic bugs.
+  CUDA: mask built directly on device.
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from chessformer.tokenizer import Vocab, elo_blend_weights, clock_blend_weights
+from chessformer.tokenizer import Vocab, ELO_BRACKETS, CLOCK_BRACKETS_S
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +66,7 @@ class _Attention(nn.Module):
         q, k, v = qkv.unbind(0)
         scores = (q @ k.transpose(-2, -1)) * self.scale
         if mask is not None:
-            scores = scores + mask  # additive bias: 0 or -inf
+            scores = scores + mask
         attn = self.drop(F.softmax(scores, dim=-1))
         return self.out((attn @ v).transpose(1, 2).reshape(B, T, C))
 
@@ -109,7 +114,7 @@ class ChessformerModel(nn.Module):
         self.d_model = d_model
 
         self.emb      = nn.Embedding(vocab.vocab_size, d_model)
-        self.move_bos = nn.Parameter(torch.empty(d_model))  # learned MOVE_BOS
+        self.move_bos = nn.Parameter(torch.empty(d_model))
         self.move_pos = nn.Embedding(self.N_MOVE_STEPS, d_model)
 
         self.blocks = nn.ModuleList([
@@ -120,6 +125,13 @@ class ChessformerModel(nn.Module):
         self.head_from  = nn.Linear(d_model, self.N_SQUARES, bias=False)
         self.head_to    = nn.Linear(d_model, self.N_SQUARES, bias=False)
         self.head_promo = nn.Linear(d_model, self.N_PROMO,   bias=False)
+
+        # Bracket boundaries and token IDs for vectorized soft-blend embedding.
+        # Registered as buffers so they move with the model to the right device.
+        self.register_buffer("elo_bounds",   torch.tensor(ELO_BRACKETS,    dtype=torch.float32))
+        self.register_buffer("clock_bounds", torch.tensor(CLOCK_BRACKETS_S, dtype=torch.float32))
+        self.register_buffer("elo_ids",   torch.tensor(list(vocab.elo_bracket_ids),   dtype=torch.long))
+        self.register_buffer("clock_ids", torch.tensor(list(vocab.clock_bracket_ids), dtype=torch.long))
 
         self._init_weights()
 
@@ -132,34 +144,51 @@ class ChessformerModel(nn.Module):
                     nn.init.zeros_(m.bias)
 
     # -----------------------------------------------------------------------
-    # Soft-blend embeddings
+    # Vectorized soft-blend embeddings
     # -----------------------------------------------------------------------
 
-    def _elo_part(self, elo: torch.Tensor) -> torch.Tensor:
-        """Soft-blended Elo embedding (without color). [B] int → [B, d_model]"""
-        W = self.emb.weight
-        out = torch.zeros(len(elo), self.d_model, device=elo.device, dtype=W.dtype)
-        unk_id = self.vocab.token_to_id["elo_unknown"]
-        for i, e in enumerate(elo.tolist()):
-            if e < 0:
-                out[i] = W[unk_id]
-            else:
-                lo, hi, alpha = elo_blend_weights(int(e), self.vocab)
-                out[i] = alpha * W[lo] + (1.0 - alpha) * W[hi]
+    def _blend(
+        self,
+        values:  torch.Tensor,   # [B]  raw scalar (elo int or clock float)
+        bounds:  torch.Tensor,   # [N]  bracket boundaries on device
+        ids:     torch.Tensor,   # [N]  vocab token IDs on device
+        unknown: torch.Tensor,   # [B]  bool mask for unknown/missing values
+        unk_emb: torch.Tensor,   # [d]  embedding to use for unknown
+    ) -> torch.Tensor:           # [B, d]
+        """Fully vectorized soft-blend between two adjacent bracket embeddings."""
+        W = self.emb.weight                                         # [V, d]
+        values_f = values.float().clamp(bounds[0], bounds[-1])
+
+        # idx = last bracket index <= value  (shape [B])
+        idx = torch.bucketize(values_f, bounds, right=True) - 1
+        idx = idx.clamp(0, len(bounds) - 2)
+
+        lo_val = bounds[idx]        # [B]
+        hi_val = bounds[idx + 1]    # [B]
+        span   = (hi_val - lo_val).clamp(min=1e-6)
+        alpha  = ((hi_val - values_f) / span).clamp(0.0, 1.0).to(W.dtype)  # [B]
+
+        lo_emb = W[ids[idx    ]]    # [B, d]
+        hi_emb = W[ids[idx + 1]]    # [B, d]
+        out    = alpha.unsqueeze(1) * lo_emb + (1.0 - alpha).unsqueeze(1) * hi_emb
+
+        if unknown.any():
+            out = out.clone()
+            out[unknown] = unk_emb
         return out
+
+    def _elo_part(self, elo: torch.Tensor) -> torch.Tensor:
+        """[B] int → [B, d_model]. -1 = unknown → elo_unknown embedding."""
+        unk_emb = self.emb.weight[self.vocab.token_to_id["elo_unknown"]]
+        return self._blend(elo, self.elo_bounds, self.elo_ids, elo < 0, unk_emb)
 
     def _clock_part(self, clock_s: torch.Tensor) -> torch.Tensor:
-        """Soft-blended clock embedding (without color). [B] float → [B, d_model]; unknown → zero."""
-        W = self.emb.weight
-        out = torch.zeros(len(clock_s), self.d_model, device=clock_s.device, dtype=W.dtype)
-        for i, c in enumerate(clock_s.tolist()):
-            if c >= 0:
-                lo, hi, alpha = clock_blend_weights(float(c), self.vocab)
-                out[i] = alpha * W[lo] + (1.0 - alpha) * W[hi]
-        return out
+        """[B] float → [B, d_model]. Negative = unknown → zero vector."""
+        unknown = clock_s < 0
+        zero    = torch.zeros(self.d_model, device=clock_s.device, dtype=self.emb.weight.dtype)
+        return self._blend(clock_s, self.clock_bounds, self.clock_ids, unknown, zero)
 
     def _color_emb(self, color_token: str, B: int) -> torch.Tensor:
-        """[B, d_model] of a single color token, broadcast across batch."""
         cid = self.vocab.token_to_id[color_token]
         return self.emb.weight[cid].unsqueeze(0).expand(B, -1)
 
@@ -169,28 +198,21 @@ class ChessformerModel(nn.Module):
 
     def _build_sequence(
         self,
-        meta_ids:       torch.Tensor,  # [B, M]
-        color_ids:      torch.Tensor,  # [B, P]
-        piece_type_ids: torch.Tensor,  # [B, P]
-        file_ids:       torch.Tensor,  # [B, P]
-        rank_ids:       torch.Tensor,  # [B, P]
-        white_elo:      torch.Tensor,  # [B]
-        black_elo:      torch.Tensor,  # [B]
-        white_clock_s:  torch.Tensor,  # [B]
-        black_clock_s:  torch.Tensor,  # [B]
-        move_ids:       torch.Tensor,  # [B, 3]  — from_sq_id, to_sq_id, (ignored promo)
+        meta_ids:       torch.Tensor,
+        color_ids:      torch.Tensor,
+        piece_type_ids: torch.Tensor,
+        file_ids:       torch.Tensor,
+        rank_ids:       torch.Tensor,
+        white_elo:      torch.Tensor,
+        black_elo:      torch.Tensor,
+        white_clock_s:  torch.Tensor,
+        black_clock_s:  torch.Tensor,
+        move_ids:       torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, int]:
-        """
-        Returns:
-            x:         [B, T, d_model]
-            mask:      [B, 1, T, T]   additive (0 or -inf)
-            board_len: int
-        """
         B      = meta_ids.shape[0]
         device = meta_ids.device
         dtype  = self.emb.weight.dtype
 
-        # Conditioning slots: emb[color] + blend(elo/clock)  [B, 1, d] each
         w_col = self._color_emb("w_color", B)
         b_col = self._color_emb("b_color", B)
         w_elo_emb   = (w_col + self._elo_part(white_elo)).unsqueeze(1)
@@ -198,14 +220,12 @@ class ChessformerModel(nn.Module):
         w_clock_emb = (w_col + self._clock_part(white_clock_s)).unsqueeze(1)
         b_clock_emb = (b_col + self._clock_part(black_clock_s)).unsqueeze(1)
 
-        # Meta tokens  [B, M, d]
         meta_valid = meta_ids >= 0
         meta_emb   = torch.zeros(B, meta_ids.shape[1], self.d_model, device=device, dtype=dtype)
         if meta_valid.any():
             safe = meta_ids.clamp(min=0)
             meta_emb[meta_valid] = self.emb(safe)[meta_valid]
 
-        # Piece tokens (additive)  [B, P, d]
         piece_valid = color_ids >= 0
         piece_emb   = torch.zeros(B, color_ids.shape[1], self.d_model, device=device, dtype=dtype)
         if piece_valid.any():
@@ -218,14 +238,12 @@ class ChessformerModel(nn.Module):
         board     = torch.cat([w_elo_emb, b_elo_emb, w_clock_emb, b_clock_emb, meta_emb, piece_emb], dim=1)
         board_len = board.shape[1]
 
-        # Padding flags per token  [B, board_len]
         board_pad = torch.cat([
-            torch.zeros(B, 4, dtype=torch.bool, device=device),  # 4 conditioning slots never pad
+            torch.zeros(B, 4, dtype=torch.bool, device=device),
             ~meta_valid,
             ~piece_valid,
         ], dim=1)
 
-        # Move suffix  [B, 3, d]
         pos0 = self.move_pos.weight[0].to(dtype)
         pos1 = self.move_pos.weight[1].to(dtype)
         pos2 = self.move_pos.weight[2].to(dtype)
@@ -234,32 +252,48 @@ class ChessformerModel(nn.Module):
         to_emb   = (self.emb(move_ids[:, 1].clamp(min=0)) + pos2).unsqueeze(1)
         move_seq = torch.cat([bos_emb, from_emb, to_emb], dim=1)
 
-        x   = torch.cat([board, move_seq], dim=1)                               # [B, T, d]
+        x   = torch.cat([board, move_seq], dim=1)
         pad = torch.cat([board_pad, torch.zeros(B, 3, dtype=torch.bool, device=device)], dim=1)
         T   = x.shape[1]
 
-        # Build mask on CPU (vectorized) to avoid MPS -inf arithmetic bugs,
-        # then move to device. All ops are torch vectorized — no Python loops.
-        mask_cpu = torch.zeros(B, 1, T, T, dtype=dtype)
+        # MPS has a bug with -inf arithmetic in broadcast ops — build mask on CPU,
+        # then move to device. On CUDA, build directly on device (avoids H2D copy).
+        if device.type == "mps":
+            mask = self._build_mask_cpu(B, T, board_len, pad, dtype).to(device)
+        else:
+            mask = self._build_mask_device(B, T, board_len, pad, dtype, device)
 
-        # Board positions must not attend to move suffix — otherwise board representations
-        # get contaminated with the ground-truth from/to tokens and MOVE_BOS can read them off.
-        mask_cpu[:, :, :board_len, board_len:] = float('-inf')
-
-        # Causal upper triangle for move suffix — broadcasts over B and the single head dim
-        mask_cpu[:, :, board_len:, board_len:] = torch.triu(
-            torch.full((self.N_MOVE_STEPS, self.N_MOVE_STEPS), float('-inf')), diagonal=1,
-        )
-
-        # Key-padding: convert bool pad [B, T] → float [B, 1, 1, T] (0 or -inf),
-        # then add — broadcasts over all query positions. On CPU: 0+-inf=-inf, -inf+-inf=-inf, no nans.
-        pad_float = torch.where(pad.cpu(),
-                                torch.full((B, T), float('-inf'), dtype=dtype),
-                                torch.zeros(B, T, dtype=dtype))
-        mask_cpu = mask_cpu + pad_float.unsqueeze(1).unsqueeze(1)  # [B,1,T,T] + [B,1,1,T]
-
-        mask = mask_cpu.to(device)
         return x, mask, board_len
+
+    @staticmethod
+    def _build_mask_cpu(
+        B: int, T: int, board_len: int,
+        pad: torch.Tensor, dtype: torch.dtype,
+    ) -> torch.Tensor:
+        mask = torch.zeros(B, 1, T, T, dtype=dtype)
+        mask[:, :, :board_len, board_len:] = float("-inf")
+        mask[:, :, board_len:, board_len:] = torch.triu(
+            torch.full((3, 3), float("-inf")), diagonal=1
+        )
+        pad_f = torch.where(pad.cpu(),
+                            torch.full((B, T), float("-inf"), dtype=dtype),
+                            torch.zeros(B, T, dtype=dtype))
+        return mask + pad_f.unsqueeze(1).unsqueeze(1)
+
+    @staticmethod
+    def _build_mask_device(
+        B: int, T: int, board_len: int,
+        pad: torch.Tensor, dtype: torch.dtype, device: torch.device,
+    ) -> torch.Tensor:
+        mask = torch.zeros(B, 1, T, T, dtype=dtype, device=device)
+        mask[:, :, :board_len, board_len:] = float("-inf")
+        mask[:, :, board_len:, board_len:] = torch.triu(
+            torch.full((3, 3), float("-inf"), device=device), diagonal=1
+        )
+        pad_f = torch.where(pad,
+                            torch.full((B, T), float("-inf"), dtype=dtype, device=device),
+                            torch.zeros(B, T, dtype=dtype, device=device))
+        return mask + pad_f.unsqueeze(1).unsqueeze(1)
 
     # -----------------------------------------------------------------------
     # Forward
@@ -278,24 +312,6 @@ class ChessformerModel(nn.Module):
         black_clock_s:  torch.Tensor,
         move_ids:       torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            meta_ids:       [B, max_meta]    int, padded -1
-            color_ids:      [B, max_pieces]  int, padded -1
-            piece_type_ids: [B, max_pieces]  int, padded -1
-            file_ids:       [B, max_pieces]  int, padded -1
-            rank_ids:       [B, max_pieces]  int, padded -1
-            white_elo:      [B]  int, -1 = unknown
-            black_elo:      [B]  int, -1 = unknown
-            white_clock_s:  [B]  float, -1 = unknown
-            black_clock_s:  [B]  float, -1 = unknown
-            move_ids:       [B, 3]  (from_sq_id, to_sq_id, dummy) padded -1
-
-        Returns:
-            from_logits:  [B, 64]
-            to_logits:    [B, 64]
-            promo_logits: [B, 4]
-        """
         x, mask, board_len = self._build_sequence(
             meta_ids, color_ids, piece_type_ids, file_ids, rank_ids,
             white_elo, black_elo, white_clock_s, black_clock_s, move_ids,
@@ -303,7 +319,6 @@ class ChessformerModel(nn.Module):
         for block in self.blocks:
             x = block(x, mask)
         x = self.norm(x)
-
         return (
             self.head_from(x[:, board_len]),
             self.head_to(x[:, board_len + 1]),
@@ -311,7 +326,7 @@ class ChessformerModel(nn.Module):
         )
 
     # -----------------------------------------------------------------------
-    # Inference helper
+    # Inference
     # -----------------------------------------------------------------------
 
     @torch.no_grad()
@@ -328,10 +343,7 @@ class ChessformerModel(nn.Module):
         black_clock_s:  torch.Tensor,
         temperature:    float = 1.0,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Sample from-sq, to-sq, promo autoregressively (3 forward passes).
-        Returns (from_sq_ids, to_sq_ids, promo_ids) each [B], IDs in vocab space.
-        """
+        """Autoregressively sample from-sq → to-sq → promo (3 forward passes)."""
         B      = meta_ids.shape[0]
         device = meta_ids.device
         vocab  = self.vocab

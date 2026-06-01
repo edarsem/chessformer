@@ -56,6 +56,12 @@ def main(cfg: DictConfig) -> None:
     rank, world_size = _setup_distributed()
     device           = _get_device()
 
+    # CUDA-only global settings — no-ops on CPU/MPS
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32        = True
+        torch.set_float32_matmul_precision("high")
+
     if rank == 0:
         print(f"Device: {device}  |  World size: {world_size}")
 
@@ -70,21 +76,26 @@ def main(cfg: DictConfig) -> None:
         print(f"Train: {train_path}")
         print(f"Val:   {val_path}")
 
+    num_workers = cfg.train.get("num_workers", 0)
     train_loader = make_loader(
         train_path,
-        batch_size  = cfg.train.batch_size,
-        shuffle     = True,
-        rank        = rank,
-        world_size  = world_size,
-        pin_memory  = (device.type == "cuda"),
+        batch_size       = cfg.train.batch_size,
+        shuffle          = True,
+        num_workers      = num_workers,
+        rank             = rank,
+        world_size       = world_size,
+        pin_memory       = (device.type == "cuda"),
+        persistent_workers = (num_workers > 0),
     )
     val_loader = make_loader(
         val_path,
-        batch_size  = cfg.train.batch_size,
-        shuffle     = False,
-        rank        = rank,
-        world_size  = world_size,
-        pin_memory  = (device.type == "cuda"),
+        batch_size       = cfg.train.batch_size,
+        shuffle          = False,
+        num_workers      = num_workers,
+        rank             = rank,
+        world_size       = world_size,
+        pin_memory       = (device.type == "cuda"),
+        persistent_workers = (num_workers > 0),
     )
 
     # --- Model ---------------------------------------------------------------
@@ -97,18 +108,30 @@ def main(cfg: DictConfig) -> None:
         dropout  = cfg.model.dropout,
     ).to(device)
 
-    if world_size > 1:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[int(os.environ["LOCAL_RANK"])])
-
     if rank == 0:
         n_params = sum(p.numel() for p in model.parameters())
         print(f"Model: {n_params:,} parameters")
 
+    if cfg.train.get("compile", False) and device.type == "cuda":
+        model = torch.compile(model)
+        if rank == 0:
+            print("Model compiled with torch.compile")
+
+    if world_size > 1:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[int(os.environ["LOCAL_RANK"])],
+            find_unused_parameters=False,
+            broadcast_buffers=False,
+        )
+
     # --- Optimizer & scheduler -----------------------------------------------
+    use_fused = device.type == "cuda" and "fused" in torch.optim.AdamW.__init__.__doc__
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr           = cfg.train.lr,
         weight_decay = cfg.train.weight_decay,
+        fused        = use_fused,
     )
     scheduler = build_lr_schedule(optimizer, cfg.train.warmup_steps, cfg.train.max_steps)
 

@@ -4,16 +4,16 @@ chessformer/dataset.py
 Dataset and DataLoader utilities for reading tokenized chess positions from parquet files.
 
 Each parquet row is one position with a known move (from_square_id always set for game rows).
-Data is loaded fully into memory at init time (polars → Python lists/arrays) for fast
-random access during shuffled training.
+Data is loaded fully into memory at init time for fast random access during shuffled training.
 
-The collate function pads variable-length meta and piece token lists to the batch maximum.
+Scalar fields (elo, clock, from/to/promo IDs) are stored as numpy arrays so __getitem__
+can use torch.from_numpy (zero-copy) instead of torch.tensor (allocates + copies).
+Variable-length lists (meta, piece tokens) must stay as Python lists since lengths differ.
 """
 
 from __future__ import annotations
 
-from typing import Optional
-
+import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -30,23 +30,24 @@ class PositionDataset(Dataset):
 
     def __init__(self, parquet_path: str):
         df = pl.read_parquet(parquet_path)
-        # Keep only positions with a known move (from_square_id >= 0)
         df = df.filter(pl.col("from_square_id") >= 0)
 
-        # Store each column as a Python list for O(1) random access
+        # Variable-length lists: must stay as Python lists (ragged rows)
         self.meta_tokens       = df["meta_tokens"].to_list()
         self.color_tokens      = df["color_tokens"].to_list()
         self.piece_type_tokens = df["piece_type_tokens"].to_list()
         self.file_tokens       = df["file_tokens"].to_list()
         self.rank_tokens       = df["rank_tokens"].to_list()
-        self.white_elo         = df["white_elo"].to_list()
-        self.black_elo         = df["black_elo"].to_list()
-        self.white_clock_s     = df["white_clock_seconds"].to_list()
-        self.black_clock_s     = df["black_clock_seconds"].to_list()
-        self.from_sq           = df["from_square_id"].to_list()
-        self.to_sq             = df["to_square_id"].to_list()
-        self.promo             = df["promo_id"].to_list()
-        self.elo_bucket        = df["elo_bucket"].to_list() if "elo_bucket" in df.columns else [""] * len(df)
+
+        # Fixed-size scalars: numpy arrays → torch.from_numpy in __getitem__ (zero-copy)
+        self.white_elo    = df["white_elo"].to_numpy().astype(np.int64)
+        self.black_elo    = df["black_elo"].to_numpy().astype(np.int64)
+        self.white_clock_s = df["white_clock_seconds"].to_numpy().astype(np.float32)
+        self.black_clock_s = df["black_clock_seconds"].to_numpy().astype(np.float32)
+        self.from_sq      = df["from_square_id"].to_numpy().astype(np.int64)
+        self.to_sq        = df["to_square_id"].to_numpy().astype(np.int64)
+        self.promo        = df["promo_id"].to_numpy().astype(np.int64)
+        self.elo_bucket   = df["elo_bucket"].to_list() if "elo_bucket" in df.columns else [""] * len(df)
 
     def __len__(self) -> int:
         return len(self.from_sq)
@@ -58,22 +59,18 @@ class PositionDataset(Dataset):
             "piece_type_ids": torch.tensor(self.piece_type_tokens[idx], dtype=torch.long),
             "file_ids":       torch.tensor(self.file_tokens[idx],       dtype=torch.long),
             "rank_ids":       torch.tensor(self.rank_tokens[idx],       dtype=torch.long),
-            "white_elo":      torch.tensor(self.white_elo[idx],         dtype=torch.long),
-            "black_elo":      torch.tensor(self.black_elo[idx],         dtype=torch.long),
-            "white_clock_s":  torch.tensor(self.white_clock_s[idx],     dtype=torch.float32),
-            "black_clock_s":  torch.tensor(self.black_clock_s[idx],     dtype=torch.float32),
-            "from_sq":        torch.tensor(self.from_sq[idx],           dtype=torch.long),
-            "to_sq":          torch.tensor(self.to_sq[idx],             dtype=torch.long),
-            "promo":          torch.tensor(self.promo[idx],             dtype=torch.long),
+            "white_elo":      torch.from_numpy(self.white_elo[idx:idx+1]).squeeze(0),
+            "black_elo":      torch.from_numpy(self.black_elo[idx:idx+1]).squeeze(0),
+            "white_clock_s":  torch.from_numpy(self.white_clock_s[idx:idx+1]).squeeze(0),
+            "black_clock_s":  torch.from_numpy(self.black_clock_s[idx:idx+1]).squeeze(0),
+            "from_sq":        torch.from_numpy(self.from_sq[idx:idx+1]).squeeze(0),
+            "to_sq":          torch.from_numpy(self.to_sq[idx:idx+1]).squeeze(0),
+            "promo":          torch.from_numpy(self.promo[idx:idx+1]).squeeze(0),
             "elo_bucket":     self.elo_bucket[idx],
         }
 
 
 def collate_fn(batch: list[dict]) -> dict:
-    """
-    Pad variable-length meta and piece token lists to the batch maximum.
-    Scalars are stacked directly. elo_bucket stays as a list of strings.
-    """
     def _pad(seqs: list[torch.Tensor], pad_val: int = -1) -> torch.Tensor:
         max_len = max(s.shape[0] for s in seqs)
         out = torch.full((len(seqs), max_len), pad_val, dtype=seqs[0].dtype)
@@ -106,19 +103,21 @@ def make_loader(
     rank: int = 0,
     world_size: int = 1,
     pin_memory: bool = False,
+    persistent_workers: bool = False,
 ) -> DataLoader:
     dataset = PositionDataset(parquet_path)
     sampler = None
     if world_size > 1:
         sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=shuffle)
-        shuffle = False  # DistributedSampler handles shuffling
+        shuffle = False
     return DataLoader(
         dataset,
-        batch_size=batch_size,
-        shuffle=shuffle if sampler is None else False,
-        sampler=sampler,
-        num_workers=num_workers,
-        collate_fn=collate_fn,
-        pin_memory=pin_memory,
-        drop_last=True,
+        batch_size         = batch_size,
+        shuffle            = shuffle if sampler is None else False,
+        sampler            = sampler,
+        num_workers        = num_workers,
+        collate_fn         = collate_fn,
+        pin_memory         = pin_memory,
+        persistent_workers = persistent_workers and num_workers > 0,
+        drop_last          = True,
     )

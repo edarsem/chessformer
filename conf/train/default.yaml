@@ -16,6 +16,8 @@ checkpoint_every: 2000 # steps
 
 # Mixed precision (autocast). GradScaler only activates on CUDA.
 mixed_precision: true
+num_workers: 0      # set to 4+ on CUDA nodes
+compile: false      # torch.compile — CUDA only, enable for GPU runs
 
 # Distributed training (activated via torchrun, not set here)
 # torchrun --nproc_per_node=N scripts/train.py

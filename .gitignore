@@ -10,4 +10,5 @@ outputs/
 .vscode/
 checkpoints/
 wandb/
+notebooks/
 .DS_STORE

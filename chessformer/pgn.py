@@ -37,6 +37,7 @@ import chess.pgn
 from chessformer.tokenizer import (
     PositionTokens,
     Vocab,
+    parse_base_seconds,
     parse_increment_seconds,
     tokenize_position,
 )
@@ -132,16 +133,21 @@ def _game_positions(game: chess.pgn.Game, vocab: Vocab) -> Iterator[PositionToke
     headers = game.headers
     white_elo = _parse_elo(headers.get("WhiteElo", "?"))
     black_elo = _parse_elo(headers.get("BlackElo", "?"))
-    increment_s = parse_increment_seconds(headers.get("TimeControl", "-"))
+    tc_str      = headers.get("TimeControl", "-")
+    increment_s = parse_increment_seconds(tc_str)
+    base_s      = parse_base_seconds(tc_str)    # starting time for both players
     game_id = headers.get("Site", "") or (
         headers.get("Date", "") + headers.get("White", "") + headers.get("Black", "")
     )
 
-    # Track each player's last known clock. node.clock() = time remaining for the
-    # player who just moved, recorded AFTER their move. We yield BEFORE the move,
-    # so each player's clock reflects their time at the start of their thinking.
-    w_clock = -1.0
-    b_clock = -1.0
+    # Track each player's clock. node.clock() = time remaining AFTER a move
+    # (Lichess [%clk] already includes the per-move increment).
+    # We yield BEFORE the move, so each player's clock = time available for this move.
+    # Initialize from the base time so the first 1-2 positions aren't -1 in games
+    # that do have clock annotations. Games with no [%clk] at all stay at base_s
+    # (or -1.0 if the time control is unknown), which is the honest best estimate.
+    w_clock = base_s
+    b_clock = base_s
 
     board = game.board()
     for node in game.mainline():

@@ -386,6 +386,22 @@ def parse_increment_seconds(tc_str: str) -> float:
         return -1.0
 
 
+def parse_base_seconds(tc_str: str) -> float:
+    """
+    Extract the base time from a Lichess time-control string.
+
+    "300+3"  → 300.0  (5 minutes base)
+    "600"    → 600.0
+    "-"      → -1.0   (unknown)
+    """
+    if not tc_str or tc_str == "-":
+        return -1.0
+    try:
+        return float(int(tc_str.split("+")[0]))
+    except (ValueError, IndexError):
+        return -1.0
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

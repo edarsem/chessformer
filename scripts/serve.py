@@ -113,13 +113,16 @@ def _render_svg(
     if probs and _state.engine:
         from_probs = probs["from_probs"]
         top_from   = sorted(range(64), key=lambda i: -from_probs[i])[:5]
+        max_fp = max(from_probs) if from_probs else 1.0
         for sq in top_from:
             p = from_probs[sq]
-            if p > 0.02:
-                opacity = min(p * 2.0, 0.55)
+            if p > 0.01:
+                opacity = min(p / max(max_fp, 1e-6) * 0.55, 0.55)
                 fill[sq] = f"rgba(30,100,220,{opacity:.2f})"
-        for mv in probs["top_moves"][:3]:
-            alpha = min(mv["prob"] * 8.0, 0.9)
+        top_moves = probs["top_moves"][:3]
+        max_prob = max((m["prob"] for m in top_moves), default=1e-9)
+        for mv in top_moves:
+            alpha = min(mv["prob"] / max(max_prob, 1e-9) * 0.9, 0.9)
             if alpha > 0.05:
                 arrows.append(chess.svg.Arrow(
                     mv["from"], mv["to"],
@@ -162,14 +165,13 @@ def _board_to_inputs(board: chess.Board) -> dict:
         "black_clock_s":  torch.tensor([_state.black_clock_s],dtype=torch.float32, device=_device),
     }
 
-def _analyze_board(board: chess.Board, top_from_k: int = 4) -> tuple[dict, Optional[chess.Move]]:
+def _analyze_board(board: chess.Board, top_from_k: int = 8) -> tuple[dict, Optional[chess.Move]]:
     """
-    Scan top-K from-squares, compute to-probs for each, find best legal move.
+    Scan from-squares to compute joint from×to probabilities and find best legal move.
 
-    Returns (probs_dict, best_legal_move) where:
-      - probs_dict.top_moves contains only legal moves, sorted by joint prob
-      - best_legal_move is top_moves[0] (or random fallback)
-    Using top_from_k from-squares costs top_from_k+1 forward passes.
+    Always includes all legal from-squares in the scan (in addition to the model's
+    top-k predictions), so the result is never empty when legal moves exist.
+    Costs len(candidate_from_sqs)+1 forward passes.
     """
     legal_all = list(board.legal_moves)
     if not legal_all:
@@ -196,12 +198,17 @@ def _analyze_board(board: chess.Board, top_from_k: int = 4) -> tuple[dict, Optio
         )
     from_probs = F.softmax(from_logits[0], dim=-1).cpu()
 
-    top_from = from_probs.topk(min(top_from_k, 64)).indices.tolist()
+    # Always include all legal from-squares so we never miss legal moves.
+    top_model = from_probs.topk(min(top_from_k, 64)).indices.tolist()
+    legal_from = list({m.from_square for m in legal_all})
+    # Preserve order: model top-k first, then any legal from-squares not already included.
+    seen: set[int] = set(top_model)
+    candidate_from_sqs = top_model + [sq for sq in legal_from if sq not in seen]
 
     candidates: list[dict] = []
     to_probs_primary: list[float] = [0.0] * 64
 
-    for i, from_sq in enumerate(top_from):
+    for i, from_sq in enumerate(candidate_from_sqs):
         dummy2 = dummy.clone()
         dummy2[0, 0] = from_sq + _vocab.from_square_offset
         with torch.no_grad():

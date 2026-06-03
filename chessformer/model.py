@@ -49,41 +49,60 @@ from chessformer.tokenizer import Vocab, ELO_BRACKETS, CLOCK_BRACKETS_S
 # Transformer building blocks
 # ---------------------------------------------------------------------------
 
+class _RMSNorm(nn.Module):
+    def __init__(self, d_model: int, eps: float = 1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(d_model))
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
+        return x * rms * self.weight
+
+
 class _Attention(nn.Module):
     def __init__(self, d_model: int, n_heads: int, dropout: float):
         super().__init__()
         assert d_model % n_heads == 0
-        self.n_heads = n_heads
-        self.d_k = d_model // n_heads
-        self.scale = self.d_k ** -0.5
+        self.n_heads  = n_heads
+        self.d_k      = d_model // n_heads
+        self.dropout  = dropout
         self.qkv = nn.Linear(d_model, 3 * d_model, bias=False)
         self.out = nn.Linear(d_model, d_model, bias=False)
-        self.drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
         B, T, C = x.shape
         qkv = self.qkv(x).reshape(B, T, 3, self.n_heads, self.d_k).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
-        scores = (q @ k.transpose(-2, -1)) * self.scale
-        if mask is not None:
-            scores = scores + mask
-        attn = self.drop(F.softmax(scores, dim=-1))
-        return self.out((attn @ v).transpose(1, 2).reshape(B, T, C))
+        # Flash Attention via SDPA — mask is [B, 1, T, T] float with -inf for blocked positions
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask  = mask,
+            dropout_p  = self.dropout if self.training else 0.0,
+        )
+        return self.out(out.transpose(1, 2).reshape(B, T, C))
+
+
+class _SwiGLU(nn.Module):
+    def __init__(self, d_model: int, ffn_mult: int, dropout: float):
+        super().__init__()
+        d_ff = d_model * ffn_mult
+        self.gate = nn.Linear(d_model, d_ff, bias=False)
+        self.up   = nn.Linear(d_model, d_ff, bias=False)
+        self.down = nn.Linear(d_ff, d_model, bias=False)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.down(self.drop(F.silu(self.gate(x)) * self.up(x)))
 
 
 class _Block(nn.Module):
     def __init__(self, d_model: int, n_heads: int, ffn_mult: int, dropout: float):
         super().__init__()
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.attn = _Attention(d_model, n_heads, dropout)
-        d_ff = d_model * ffn_mult
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_ff),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_ff, d_model),
-        )
+        self.norm1 = _RMSNorm(d_model)
+        self.norm2 = _RMSNorm(d_model)
+        self.attn  = _Attention(d_model, n_heads, dropout)
+        self.ffn   = _SwiGLU(d_model, ffn_mult, dropout)
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
         x = x + self.attn(self.norm1(x), mask)
@@ -120,7 +139,7 @@ class ChessformerModel(nn.Module):
         self.blocks = nn.ModuleList([
             _Block(d_model, n_heads, ffn_mult, dropout) for _ in range(n_layers)
         ])
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = _RMSNorm(d_model)
 
         self.head_from  = nn.Linear(d_model, self.N_SQUARES, bias=False)
         self.head_to    = nn.Linear(d_model, self.N_SQUARES, bias=False)

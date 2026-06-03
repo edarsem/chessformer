@@ -126,7 +126,8 @@ def main(cfg: DictConfig) -> None:
         )
 
     # --- Optimizer & scheduler -----------------------------------------------
-    use_fused = device.type == "cuda" and "fused" in torch.optim.AdamW.__init__.__doc__
+    _adamw_doc = torch.optim.AdamW.__init__.__doc__ or ""
+    use_fused = device.type == "cuda" and "fused" in _adamw_doc
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr           = cfg.train.lr,

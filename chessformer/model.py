@@ -42,7 +42,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from chessformer.tokenizer import Vocab, ELO_BRACKETS, CLOCK_BRACKETS_S
+from chessformer.tokenizer import Vocab, ELO_BRACKETS, CLOCK_BRACKETS_S, INCREMENT_BRACKETS_S
 
 
 # ---------------------------------------------------------------------------
@@ -148,14 +148,17 @@ class ChessformerModel(nn.Module):
 
         # Bracket boundaries and token IDs for vectorized soft-blend embedding.
         # Registered as buffers so they move with the model to the right device.
-        self.register_buffer("elo_bounds",   torch.tensor(ELO_BRACKETS,    dtype=torch.float32))
-        self.register_buffer("clock_bounds", torch.tensor(CLOCK_BRACKETS_S, dtype=torch.float32))
-        self.register_buffer("elo_ids",   torch.tensor(list(vocab.elo_bracket_ids),   dtype=torch.long))
+        self.register_buffer("elo_bounds",   torch.tensor(ELO_BRACKETS,         dtype=torch.float32))
+        self.register_buffer("clock_bounds", torch.tensor(CLOCK_BRACKETS_S,     dtype=torch.float32))
+        self.register_buffer("incr_bounds",  torch.tensor(INCREMENT_BRACKETS_S, dtype=torch.float32))
+        self.register_buffer("elo_ids",   torch.tensor(list(vocab.elo_bracket_ids),  dtype=torch.long))
         self.register_buffer("clock_ids", torch.tensor(list(vocab.clock_bracket_ids), dtype=torch.long))
+        self.register_buffer("incr_ids",  torch.tensor(list(vocab.incr_bracket_ids), dtype=torch.long))
 
-        # Role token IDs for the move suffix — fixed scalars, registered as buffers.
+        # Role token IDs — fixed scalars registered as buffers.
         self.register_buffer("from_tok_id", torch.tensor(vocab.from_tok_id, dtype=torch.long))
         self.register_buffer("to_tok_id",   torch.tensor(vocab.to_tok_id,   dtype=torch.long))
+        self.register_buffer("incr_tok_id", torch.tensor(vocab.incr_tok_id, dtype=torch.long))
 
         self._init_weights()
 
@@ -212,6 +215,11 @@ class ChessformerModel(nn.Module):
         zero    = torch.zeros(self.d_model, device=clock_s.device, dtype=self.emb.weight.dtype)
         return self._blend(clock_s, self.clock_bounds, self.clock_ids, unknown, zero)
 
+    def _incr_part(self, incr_s: torch.Tensor) -> torch.Tensor:
+        """[B] float → [B, d_model]. Negative = unknown → increment_unknown embedding."""
+        unk_emb = self.emb.weight[self.vocab.token_to_id["increment_unknown"]]
+        return self._blend(incr_s, self.incr_bounds, self.incr_ids, incr_s < 0, unk_emb)
+
     def _color_emb(self, color_token: str, B: int) -> torch.Tensor:
         cid = self.vocab.token_to_id[color_token]
         return self.emb.weight[cid].unsqueeze(0).expand(B, -1)
@@ -231,12 +239,20 @@ class ChessformerModel(nn.Module):
         black_elo:      torch.Tensor,
         white_clock_s:  torch.Tensor,
         black_clock_s:  torch.Tensor,
+        increment_s:    torch.Tensor,
         move_ids:       torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, int]:
         B      = meta_ids.shape[0]
         device = meta_ids.device
         dtype  = self.emb.weight.dtype
 
+        # --- Meta slot (1 position): sum of valid token embeddings (side + castling + ep) ---
+        meta_valid = meta_ids >= 0                                    # [B, META_SLOT_SIZE]
+        meta_emb   = self.emb(meta_ids.clamp(min=0)).to(dtype)       # [B, META_SLOT_SIZE, d]
+        meta_emb   = meta_emb * meta_valid.unsqueeze(-1)             # zero out padding
+        meta_slot  = meta_emb.sum(dim=1, keepdim=True)               # [B, 1, d]
+
+        # --- Elo / clock conditioning (4 positions) ---
         w_col = self._color_emb("w_color", B)
         b_col = self._color_emb("b_color", B)
         w_elo_emb   = (w_col + self._elo_part(white_elo)).unsqueeze(1)
@@ -244,12 +260,11 @@ class ChessformerModel(nn.Module):
         w_clock_emb = (w_col + self._clock_part(white_clock_s)).unsqueeze(1)
         b_clock_emb = (b_col + self._clock_part(black_clock_s)).unsqueeze(1)
 
-        meta_valid = meta_ids >= 0
-        meta_emb   = torch.zeros(B, meta_ids.shape[1], self.d_model, device=device, dtype=dtype)
-        if meta_valid.any():
-            safe = meta_ids.clamp(min=0)
-            meta_emb[meta_valid] = self.emb(safe)[meta_valid]
+        # --- Increment conditioning (1 position) ---
+        incr_role = self.emb.weight[self.incr_tok_id].to(dtype)
+        incr_emb  = (incr_role + self._incr_part(increment_s)).unsqueeze(1)  # [B, 1, d]
 
+        # --- Piece slots (up to 32 positions) ---
         piece_valid = color_ids >= 0
         piece_emb   = torch.zeros(B, color_ids.shape[1], self.d_model, device=device, dtype=dtype)
         if piece_valid.any():
@@ -259,12 +274,12 @@ class ChessformerModel(nn.Module):
                  + self.emb(rank_ids.clamp(min=0)))
             piece_emb[piece_valid] = p[piece_valid]
 
-        board     = torch.cat([w_elo_emb, b_elo_emb, w_clock_emb, b_clock_emb, meta_emb, piece_emb], dim=1)
+        # 6 fixed slots (meta + w_elo + b_elo + w_clock + b_clock + incr) are never padded
+        board     = torch.cat([meta_slot, w_elo_emb, b_elo_emb, w_clock_emb, b_clock_emb, incr_emb, piece_emb], dim=1)
         board_len = board.shape[1]
 
         board_pad = torch.cat([
-            torch.zeros(B, 4, dtype=torch.bool, device=device),
-            ~meta_valid,
+            torch.zeros(B, 6, dtype=torch.bool, device=device),
             ~piece_valid,
         ], dim=1)
 
@@ -346,11 +361,12 @@ class ChessformerModel(nn.Module):
         black_elo:      torch.Tensor,
         white_clock_s:  torch.Tensor,
         black_clock_s:  torch.Tensor,
+        increment_s:    torch.Tensor,
         move_ids:       torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x, mask, board_len = self._build_sequence(
             meta_ids, color_ids, piece_type_ids, file_ids, rank_ids,
-            white_elo, black_elo, white_clock_s, black_clock_s, move_ids,
+            white_elo, black_elo, white_clock_s, black_clock_s, increment_s, move_ids,
         )
         for block in self.blocks:
             x = block(x, mask)
@@ -377,6 +393,7 @@ class ChessformerModel(nn.Module):
         black_elo:      torch.Tensor,
         white_clock_s:  torch.Tensor,
         black_clock_s:  torch.Tensor,
+        increment_s:    torch.Tensor,
         temperature:    float = 1.0,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Autoregressively sample from-sq → to-sq → promo (3 forward passes).
@@ -388,7 +405,7 @@ class ChessformerModel(nn.Module):
         B      = meta_ids.shape[0]
         device = meta_ids.device
         board  = (meta_ids, color_ids, piece_type_ids, file_ids, rank_ids,
-                  white_elo, black_elo, white_clock_s, black_clock_s)
+                  white_elo, black_elo, white_clock_s, black_clock_s, increment_s)
         # move_ids: [B, 4] = [from_file_id, from_rank_id, to_file_id, to_rank_id]
         dummy = torch.zeros(B, 4, dtype=torch.long, device=device)
 
@@ -440,6 +457,7 @@ class ChessformerModel(nn.Module):
         black_elo:      torch.Tensor,
         white_clock_s:  torch.Tensor,
         black_clock_s:  torch.Tensor,
+        increment_s:    torch.Tensor,
     ) -> dict:
         """Return from/to probability distributions for debug display.
 
@@ -448,7 +466,7 @@ class ChessformerModel(nn.Module):
         """
         device = meta_ids.device
         board  = (meta_ids, color_ids, piece_type_ids, file_ids, rank_ids,
-                  white_elo, black_elo, white_clock_s, black_clock_s)
+                  white_elo, black_elo, white_clock_s, black_clock_s, increment_s)
         dummy = torch.zeros(1, 4, dtype=torch.long, device=device)
 
         from_logits, _, _ = self.forward(*board, dummy)

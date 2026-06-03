@@ -37,7 +37,7 @@ import chess.pgn
 from chessformer.tokenizer import (
     PositionTokens,
     Vocab,
-    classify_time_control,
+    parse_increment_seconds,
     tokenize_position,
 )
 
@@ -132,7 +132,7 @@ def _game_positions(game: chess.pgn.Game, vocab: Vocab) -> Iterator[PositionToke
     headers = game.headers
     white_elo = _parse_elo(headers.get("WhiteElo", "?"))
     black_elo = _parse_elo(headers.get("BlackElo", "?"))
-    tc_token = classify_time_control(headers.get("TimeControl", "-"))
+    increment_s = parse_increment_seconds(headers.get("TimeControl", "-"))
     game_id = headers.get("Site", "") or (
         headers.get("Date", "") + headers.get("White", "") + headers.get("Black", "")
     )
@@ -155,7 +155,7 @@ def _game_positions(game: chess.pgn.Game, vocab: Vocab) -> Iterator[PositionToke
             black_elo=black_elo,
             white_clock_seconds=w_clock,
             black_clock_seconds=b_clock,
-            time_control=tc_token,
+            increment_seconds=increment_s,
             game_id=game_id,
         )
 
@@ -270,7 +270,7 @@ def _puzzle_positions(
             black_elo=3400,
             white_clock_seconds=-1.0,
             black_clock_seconds=-1.0,
-            time_control="unknown_time",
+            increment_seconds=-1.0,
             game_id=puzzle_id,
         )
         positions.append(pos)

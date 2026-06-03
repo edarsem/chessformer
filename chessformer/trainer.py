@@ -180,6 +180,7 @@ class Trainer:
                 black_elo      = batch["black_elo"],
                 white_clock_s  = batch["white_clock_s"],
                 black_clock_s  = batch["black_clock_s"],
+                increment_s    = batch["increment_s"],
                 move_ids       = _make_move_ids(batch, self.device),
             )
             from_target = batch["from_sq"]   # 0-63
@@ -220,6 +221,7 @@ class Trainer:
                 black_elo      = batch["black_elo"],
                 white_clock_s  = batch["white_clock_s"],
                 black_clock_s  = batch["black_clock_s"],
+                increment_s    = batch["increment_s"],
                 move_ids       = _make_move_ids(batch, self.device),
             )
             from_target = batch["from_sq"]   # 0-63

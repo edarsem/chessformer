@@ -60,6 +60,7 @@ GAMES_SCHEMA = pa.schema([
     pa.field("elo_spread",           pa.int16()),
     pa.field("white_clock_seconds",  pa.float32()),
     pa.field("black_clock_seconds",  pa.float32()),
+    pa.field("increment_seconds",    pa.float32()),
     pa.field("meta_tokens",          pa.list_(pa.int16())),
     pa.field("color_tokens",         pa.list_(pa.int8())),
     pa.field("piece_type_tokens",    pa.list_(pa.int8())),
@@ -83,6 +84,7 @@ PUZZLES_SCHEMA = pa.schema([
     pa.field("black_elo",            pa.int16()),     # always 3400
     pa.field("white_clock_seconds",  pa.float32()),   # always -1.0 (unknown)
     pa.field("black_clock_seconds",  pa.float32()),   # always -1.0
+    pa.field("increment_seconds",    pa.float32()),   # always -1.0
     pa.field("meta_tokens",          pa.list_(pa.int16())),
     pa.field("color_tokens",         pa.list_(pa.int8())),
     pa.field("piece_type_tokens",    pa.list_(pa.int8())),
@@ -112,6 +114,7 @@ def pos_to_game_row(pos: PositionTokens, avg_elo: int, elo_spread: int) -> dict:
         "elo_spread":          elo_spread,
         "white_clock_seconds": pos.white_clock_seconds,
         "black_clock_seconds": pos.black_clock_seconds,
+        "increment_seconds":   pos.increment_seconds,
         "meta_tokens":         pos.meta_tokens,
         "color_tokens":        pos.color_tokens,
         "piece_type_tokens":   pos.piece_type_tokens,
@@ -138,6 +141,7 @@ def pos_to_puzzle_row(pos: PositionTokens, puzzle_rating: int, seq_index: int) -
         "black_elo":             pos.black_elo,
         "white_clock_seconds":   pos.white_clock_seconds,
         "black_clock_seconds":   pos.black_clock_seconds,
+        "increment_seconds":     pos.increment_seconds,
         "meta_tokens":           pos.meta_tokens,
         "color_tokens":          pos.color_tokens,
         "piece_type_tokens":     pos.piece_type_tokens,

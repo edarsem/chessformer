@@ -12,22 +12,27 @@ Each piece gets a single sequence slot. Its embedding in the model is the sum of
 four independent lookups:
     emb[color] + emb[piece_type] + emb[file] + emb[rank]
 
-This lets the model generalize independently over colors, piece types, files, and
-ranks (e.g. "rooks on the d-file" without that being a single opaque token).
+Sequence layout
+---------------
+1. Meta slot (1 position): additive sum of side-to-move + castling rights + en-passant.
+   All applicable token embeddings are summed into a single sequence position.
+2. Conditioning slots (5 positions): w_elo, b_elo, w_clock, b_clock, increment.
+   Each uses soft interpolation between the two nearest bracket embeddings.
+3. Piece slots (up to 32 positions): one per piece on the board.
+4. Move suffix (3 positions): MOVE_BOS → from_square → to_square.
 
-Elo and clock conditioning
---------------------------
-Both are stored as raw scalars (int and float). The model embeds them with soft
-interpolation between the two nearest bracket embeddings:
+Elo, clock, and increment conditioning
+---------------------------------------
+Raw scalars stored in PositionTokens. The model soft-blends between adjacent
+bracket embeddings:
     alpha * emb[lower_bracket] + (1 - alpha) * emb[upper_bracket]
-See elo_blend_weights() and clock_blend_weights() for the weight computation.
-These are called inside the model's embedding layer, not here.
 
 Move representation
 -------------------
 Moves are autoregressive: from-square → to-square → promotion (if any).
 At training time this is done in one forward pass with causal masking.
-tokenize_position() returns the from/to/promo IDs as separate targets.
+from/to squares reuse shared file_*/rank_* token embeddings (like pieces).
+tokenize_position() returns from/to/promo as separate targets.
 """
 
 from __future__ import annotations
@@ -51,6 +56,13 @@ ELO_BRACKETS: list[int] = list(range(0, 3401, 100))  # 35 values
 CLOCK_BRACKETS_S: list[float] = [
     0, 5, 10, 20, 30, 60, 120, 180, 300, 600, 1200, 3600, 10800,
 ]
+
+# Increment brackets in seconds. 60 acts as "60+" (clamped). -1 = unknown.
+INCREMENT_BRACKETS_S: list[int] = [0, 1, 3, 5, 10, 30, 60]
+
+# Maximum additive tokens in the single meta slot:
+# 1 (side to move) + 4 (castling rights) + 1 (en passant) = 6
+META_SLOT_SIZE: int = 6
 
 _FILES = list("abcdefgh")
 _RANKS = list("12345678")
@@ -83,35 +95,49 @@ class Vocab:
     from_tok_id: int   # "from_tok"
     to_tok_id: int     # "to_tok"
 
+    # Role token for the increment conditioning slot
+    incr_tok_id: int   # "incr_tok"
+
     # First token ID of the promotion group (model output head)
     promo_offset: int  # promote_n .. promote_q
 
-    # Ordered bracket IDs for soft blending (parallel to ELO_BRACKETS / CLOCK_BRACKETS_S)
-    elo_bracket_ids: tuple[int, ...]
+    # Ordered bracket IDs for soft blending
+    elo_bracket_ids:  tuple[int, ...]
     clock_bracket_ids: tuple[int, ...]
+    incr_bracket_ids: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        assert len(self.elo_bracket_ids) == len(ELO_BRACKETS)
+        assert len(self.elo_bracket_ids)  == len(ELO_BRACKETS)
         assert len(self.clock_bracket_ids) == len(CLOCK_BRACKETS_S)
+        assert len(self.incr_bracket_ids) == len(INCREMENT_BRACKETS_S)
 
 
 def build_vocab() -> Vocab:
     """Build and return the full token vocabulary. Call once; reuse everywhere."""
     tokens: list[str] = []
 
+    # Meta slot: side to move, castling rights, en passant (summed additively in model)
     tokens += ["play_w", "play_b"]
-    tokens += ["bullet", "blitz", "rapid", "classical", "unknown_time"]
-    tokens += [f"elo_{e}" for e in ELO_BRACKETS] + ["elo_unknown"]
-    tokens += [f"clock_{int(s) if s == int(s) else s}" for s in CLOCK_BRACKETS_S]
     tokens += ["w_k", "w_q", "b_k", "b_q"]
     tokens += [f"ep_{f}" for f in _FILES]
+
+    # Elo conditioning (soft blend)
+    tokens += [f"elo_{e}" for e in ELO_BRACKETS] + ["elo_unknown"]
+
+    # Clock conditioning (soft blend)
+    tokens += [f"clock_{int(s) if s == int(s) else s}" for s in CLOCK_BRACKETS_S]
+
+    # Increment conditioning (soft blend)
+    incr_tok_id = len(tokens); tokens += ["incr_tok"]
+    tokens += [f"increment_{s}" for s in INCREMENT_BRACKETS_S] + ["increment_unknown"]
+
+    # Piece embeddings (color + piece_type + file + rank, summed per piece)
     tokens += _COLORS
     tokens += _PIECE_TYPES
     tokens += [f"file_{f}" for f in _FILES]
     tokens += [f"rank_{r}" for r in _RANKS]
 
-    # Role tokens: distinguish from-square from to-square in the move suffix.
-    # The actual square is encoded via shared file_*/rank_* embeddings (like pieces).
+    # Move suffix role tokens (from/to squares reuse file_*/rank_* embeddings)
     from_tok_id = len(tokens); tokens += ["from_tok"]
     to_tok_id   = len(tokens); tokens += ["to_tok"]
 
@@ -127,11 +153,13 @@ def build_vocab() -> Vocab:
         vocab_size=len(tokens),
         from_tok_id=from_tok_id,
         to_tok_id=to_tok_id,
+        incr_tok_id=incr_tok_id,
         promo_offset=promo_offset,
         elo_bracket_ids=tuple(t2i[f"elo_{e}"] for e in ELO_BRACKETS),
         clock_bracket_ids=tuple(
             t2i[f"clock_{int(s) if s == int(s) else s}"] for s in CLOCK_BRACKETS_S
         ),
+        incr_bracket_ids=tuple(t2i[f"increment_{s}"] for s in INCREMENT_BRACKETS_S),
     )
 
 
@@ -153,7 +181,8 @@ class PositionTokens:
 
     Move fields are None when tokenizing for inference (no move known yet).
     """
-    # Discrete meta sequence (variable length; max ~10 tokens)
+    # Meta slot: additive token IDs (side_to_move + castling + ep), length ≤ META_SLOT_SIZE.
+    # These are SUMMED into a single sequence position in the model (not sequenced).
     meta_tokens: list[int]
 
     # Board — parallel lists, one entry per piece (up to 32)
@@ -163,10 +192,11 @@ class PositionTokens:
     rank_tokens: list[int]
 
     # Continuous conditioning — raw values, model handles soft blending. -1/-1.0 = unknown.
-    white_elo: int            # white player's Elo
-    black_elo: int            # black player's Elo
+    white_elo: int              # white player's Elo
+    black_elo: int              # black player's Elo
     white_clock_seconds: float  # white's remaining clock at this position
     black_clock_seconds: float  # black's remaining clock at this position
+    increment_seconds: float    # time increment per move; -1.0 = unknown
 
     # Move targets (None during inference).
     # from/to square as a plain 0-63 chess square index (chess.SQUARES order).
@@ -204,7 +234,7 @@ def tokenize_position(
     black_elo: int = -1,
     white_clock_seconds: float = -1.0,
     black_clock_seconds: float = -1.0,
-    time_control: str = "unknown_time",
+    increment_seconds: float = -1.0,
     game_id: str = "",
 ) -> PositionTokens:
     """
@@ -218,7 +248,7 @@ def tokenize_position(
         black_elo: Black player's Elo. -1 if unknown.
         white_clock_seconds: White's remaining clock seconds. -1.0 if unknown.
         black_clock_seconds: Black's remaining clock seconds. -1.0 if unknown.
-        time_control: One of bullet / blitz / rapid / classical / unknown_time.
+        increment_seconds: Time increment per move in seconds. -1.0 if unknown.
         game_id: Source game identifier (for reproducible splits).
 
     Returns:
@@ -228,9 +258,8 @@ def tokenize_position(
     board = chess.Board(fen)
     turn_is_white = board.turn == chess.WHITE
 
-    # --- Meta tokens -------------------------------------------------------
+    # --- Meta slot (additive — all embeddings summed into one sequence position) ---
     meta: list[int] = [t["play_w" if turn_is_white else "play_b"]]
-    meta.append(t[time_control])
 
     if board.has_kingside_castling_rights(chess.WHITE):
         meta.append(t["w_k"])
@@ -285,6 +314,7 @@ def tokenize_position(
         black_elo=black_elo,
         white_clock_seconds=white_clock_seconds,
         black_clock_seconds=black_clock_seconds,
+        increment_seconds=increment_seconds,
         from_square_id=from_sq,
         to_square_id=to_sq,
         from_file_id=from_file,
@@ -335,35 +365,25 @@ def _blend_weights(
 
 
 # ---------------------------------------------------------------------------
-# Time-control classification
+# Time-control helpers
 # ---------------------------------------------------------------------------
 
-def classify_time_control(tc_str: str) -> str:
+def parse_increment_seconds(tc_str: str) -> float:
     """
-    Map a Lichess time-control string ("300+3") to a vocab token.
+    Extract the per-move increment from a Lichess time-control string.
 
-    Uses a 40-move game estimate for the increment component, which is the
-    standard used by FIDE and Lichess for time-control category boundaries.
-
-    Returns one of: bullet / blitz / rapid / classical / unknown_time.
+    "300+3"  → 3.0    (3 seconds per move)
+    "600+0"  → 0.0    (no increment)
+    "600"    → 0.0    (no increment specified)
+    "-"      → -1.0   (unknown / no time control)
     """
     if not tc_str or tc_str == "-":
-        return "unknown_time"
+        return -1.0
     try:
         parts = tc_str.split("+")
-        base = int(parts[0])
-        increment = int(parts[1]) if len(parts) > 1 else 0
-        estimated_seconds = base + 40 * increment
+        return float(int(parts[1])) if len(parts) > 1 else 0.0
     except (ValueError, IndexError):
-        return "unknown_time"
-
-    if estimated_seconds < 180:
-        return "bullet"
-    if estimated_seconds < 480:
-        return "blitz"
-    if estimated_seconds < 1500:
-        return "rapid"
-    return "classical"
+        return -1.0
 
 
 # ---------------------------------------------------------------------------

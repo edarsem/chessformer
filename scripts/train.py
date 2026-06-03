@@ -110,7 +110,11 @@ def main(cfg: DictConfig) -> None:
 
     if rank == 0:
         n_params = sum(p.numel() for p in model.parameters())
-        print(f"Model: {n_params:,} parameters")
+        print(f"{'='*60}")
+        print(f"  Model:  ChessformerModel  |  {n_params/1e6:.1f}M params")
+        print(f"  Config: d_model={cfg.model.d_model}  n_heads={cfg.model.n_heads}  n_layers={cfg.model.n_layers}")
+        print(f"  Batch:  {cfg.train.batch_size} × {world_size} GPUs = {cfg.train.batch_size * world_size} pos/step")
+        print(f"{'='*60}")
 
     if cfg.train.get("compile", False) and device.type == "cuda":
         model = torch.compile(model)
@@ -168,6 +172,7 @@ def main(cfg: DictConfig) -> None:
         device       = device,
         vocab_offsets= vocab_offsets,
         rank         = rank,
+        world_size   = world_size,
     )
 
     # --- Resume --------------------------------------------------------------

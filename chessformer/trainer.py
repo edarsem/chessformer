@@ -47,6 +47,7 @@ class Trainer:
         device: torch.device,
         vocab_offsets: dict,
         rank: int = 0,
+        world_size: int = 1,
     ):
         self.model        = model
         self.optimizer    = optimizer
@@ -57,6 +58,7 @@ class Trainer:
         self.device       = device
         self.offsets      = vocab_offsets
         self.rank         = rank
+        self.world_size   = world_size
         self.is_main      = (rank == 0)
 
         # Precision: None = no autocast (MPS / CPU)
@@ -87,11 +89,13 @@ class Trainer:
 
     def fit(self, start_step: int = 0) -> None:
         self.model.train()
-        step    = start_step
-        it      = iter(self.train_loader)
-        cfg_t   = self.cfg.train
+        step      = start_step
+        it        = iter(self.train_loader)
+        cfg_t     = self.cfg.train
         log_every = 50
-        t_wall  = time.perf_counter()
+        t_wall    = time.perf_counter()
+        # skip the first log window from throughput reporting — torch.compile runs there
+        _first_log = True
 
         while step < cfg_t.max_steps:
             try:
@@ -109,18 +113,26 @@ class Trainer:
                 lr      = self.scheduler.get_last_lr()[0]
                 elapsed = time.perf_counter() - t_wall
                 sps     = log_every / elapsed
+                pos_per_s = sps * cfg_t.batch_size * self.world_size
+                if _first_log:
+                    # first window includes torch.compile — report time but flag it
+                    sps_str = f"{sps:.1f} steps/s (incl. compile)"
+                    _first_log = False
+                else:
+                    sps_str = f"{sps:.1f} steps/s | {pos_per_s:,.0f} pos/s"
                 print(
                     f"step {step:6d} | loss {metrics['loss']:.4f} "
                     f"| gnorm {metrics['grad_norm']:.3f} | lr {lr:.2e} "
-                    f"| {sps:.1f} steps/s",
+                    f"| {sps_str}",
                     flush=True,
                 )
-                if self._wandb:
+                if self._wandb and not _first_log:
                     self._wandb.log({
-                        "train/loss":       metrics["loss"],
-                        "train/grad_norm":  metrics["grad_norm"],
-                        "train/lr":         lr,
-                        "perf/steps_per_s": sps,
+                        "train/loss":         metrics["loss"],
+                        "train/grad_norm":    metrics["grad_norm"],
+                        "train/lr":           lr,
+                        "perf/steps_per_s":   sps,
+                        "perf/positions_per_s": pos_per_s,
                     }, step=step)
                 t_wall = time.perf_counter()
 
@@ -139,6 +151,7 @@ class Trainer:
                     )
                     if self._wandb:
                         self._wandb.log({f"val/{k}": v for k, v in val_metrics.items()}, step=step)
+                    self.save_checkpoint(step, tag="latest")
                 t_wall = time.perf_counter()
 
             if self.is_main and step % cfg_t.checkpoint_every == 0:
@@ -265,9 +278,10 @@ class Trainer:
     # Checkpointing
     # -----------------------------------------------------------------------
 
-    def save_checkpoint(self, step: int) -> None:
+    def save_checkpoint(self, step: int, tag: str | None = None) -> None:
         os.makedirs(self.cfg.paths.checkpoints_dir, exist_ok=True)
-        path = os.path.join(self.cfg.paths.checkpoints_dir, f"step_{step:07d}.pt")
+        fname = f"{tag}.pt" if tag else f"step_{step:07d}.pt"
+        path  = os.path.join(self.cfg.paths.checkpoints_dir, fname)
         model_state = (
             self.model.module.state_dict()
             if hasattr(self.model, "module") else self.model.state_dict()

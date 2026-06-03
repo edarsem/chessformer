@@ -68,8 +68,12 @@ class PositionDataset(Dataset):
         self.black_elo    = df["black_elo"].to_numpy().astype(np.int64)
         self.white_clock_s = df["white_clock_seconds"].to_numpy().astype(np.float32)
         self.black_clock_s = df["black_clock_seconds"].to_numpy().astype(np.float32)
-        self.from_sq      = df["from_square_id"].to_numpy().astype(np.int64)
-        self.to_sq        = df["to_square_id"].to_numpy().astype(np.int64)
+        self.from_sq      = df["from_square_id"].to_numpy().astype(np.int64)   # 0-63
+        self.to_sq        = df["to_square_id"].to_numpy().astype(np.int64)     # 0-63
+        self.from_file    = df["from_file_id"].to_numpy().astype(np.int64)
+        self.from_rank    = df["from_rank_id"].to_numpy().astype(np.int64)
+        self.to_file      = df["to_file_id"].to_numpy().astype(np.int64)
+        self.to_rank      = df["to_rank_id"].to_numpy().astype(np.int64)
         self.promo        = df["promo_id"].to_numpy().astype(np.int64)
         self.elo_bucket   = df["elo_bucket"].to_list() if "elo_bucket" in df.columns else [""] * n
 
@@ -91,6 +95,10 @@ class PositionDataset(Dataset):
             "black_clock_s":  torch.from_numpy(self.black_clock_s[idx:idx+1]).squeeze(0),
             "from_sq":        torch.from_numpy(self.from_sq[idx:idx+1]).squeeze(0),
             "to_sq":          torch.from_numpy(self.to_sq[idx:idx+1]).squeeze(0),
+            "from_file":      torch.from_numpy(self.from_file[idx:idx+1]).squeeze(0),
+            "from_rank":      torch.from_numpy(self.from_rank[idx:idx+1]).squeeze(0),
+            "to_file":        torch.from_numpy(self.to_file[idx:idx+1]).squeeze(0),
+            "to_rank":        torch.from_numpy(self.to_rank[idx:idx+1]).squeeze(0),
             "promo":          torch.from_numpy(self.promo[idx:idx+1]).squeeze(0),
             "elo_bucket":     self.elo_bucket[idx],
         }
@@ -114,9 +122,13 @@ def collate_fn(batch: list[dict]) -> dict:
         "black_elo":      torch.stack([b["black_elo"]     for b in batch]),
         "white_clock_s":  torch.stack([b["white_clock_s"] for b in batch]),
         "black_clock_s":  torch.stack([b["black_clock_s"] for b in batch]),
-        "from_sq":        torch.stack([b["from_sq"]  for b in batch]),
-        "to_sq":          torch.stack([b["to_sq"]    for b in batch]),
-        "promo":          torch.stack([b["promo"]    for b in batch]),
+        "from_sq":        torch.stack([b["from_sq"]   for b in batch]),
+        "to_sq":          torch.stack([b["to_sq"]     for b in batch]),
+        "from_file":      torch.stack([b["from_file"] for b in batch]),
+        "from_rank":      torch.stack([b["from_rank"] for b in batch]),
+        "to_file":        torch.stack([b["to_file"]   for b in batch]),
+        "to_rank":        torch.stack([b["to_rank"]   for b in batch]),
+        "promo":          torch.stack([b["promo"]     for b in batch]),
         "elo_bucket":     [b["elo_bucket"] for b in batch],
     }
 

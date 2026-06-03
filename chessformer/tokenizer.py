@@ -54,8 +54,6 @@ CLOCK_BRACKETS_S: list[float] = [
 
 _FILES = list("abcdefgh")
 _RANKS = list("12345678")
-_SQUARES = [f"{f}{r}" for r in _RANKS for f in _FILES]  # a1..h8 row-major
-
 _PIECE_TYPES = ["pawn", "knight", "bishop", "rook", "queen", "king"]
 _COLORS = ["w_color", "b_color"]
 _PROMOTIONS = ["promote_n", "promote_b", "promote_r", "promote_q"]
@@ -81,10 +79,12 @@ class Vocab:
     id_to_token: dict[int, str]
     vocab_size: int
 
-    # First token ID of each move-related group (for the model output head)
-    from_square_offset: int  # f_a1 .. f_h8
-    to_square_offset: int    # t_a1 .. t_h8
-    promo_offset: int        # promote_n .. promote_q
+    # Role tokens for the move suffix (distinguish from-square from to-square)
+    from_tok_id: int   # "from_tok"
+    to_tok_id: int     # "to_tok"
+
+    # First token ID of the promotion group (model output head)
+    promo_offset: int  # promote_n .. promote_q
 
     # Ordered bracket IDs for soft blending (parallel to ELO_BRACKETS / CLOCK_BRACKETS_S)
     elo_bracket_ids: tuple[int, ...]
@@ -110,10 +110,11 @@ def build_vocab() -> Vocab:
     tokens += [f"file_{f}" for f in _FILES]
     tokens += [f"rank_{r}" for r in _RANKS]
 
-    from_square_offset = len(tokens)
-    tokens += [f"f_{sq}" for sq in _SQUARES]
-    to_square_offset = len(tokens)
-    tokens += [f"t_{sq}" for sq in _SQUARES]
+    # Role tokens: distinguish from-square from to-square in the move suffix.
+    # The actual square is encoded via shared file_*/rank_* embeddings (like pieces).
+    from_tok_id = len(tokens); tokens += ["from_tok"]
+    to_tok_id   = len(tokens); tokens += ["to_tok"]
+
     promo_offset = len(tokens)
     tokens += _PROMOTIONS
 
@@ -124,8 +125,8 @@ def build_vocab() -> Vocab:
         token_to_id=t2i,
         id_to_token=i2t,
         vocab_size=len(tokens),
-        from_square_offset=from_square_offset,
-        to_square_offset=to_square_offset,
+        from_tok_id=from_tok_id,
+        to_tok_id=to_tok_id,
         promo_offset=promo_offset,
         elo_bracket_ids=tuple(t2i[f"elo_{e}"] for e in ELO_BRACKETS),
         clock_bracket_ids=tuple(
@@ -167,10 +168,16 @@ class PositionTokens:
     white_clock_seconds: float  # white's remaining clock at this position
     black_clock_seconds: float  # black's remaining clock at this position
 
-    # Move targets (None during inference)
-    from_square_id: Optional[int] = None
-    to_square_id: Optional[int] = None
-    promo_id: Optional[int] = None  # None also when no promotion
+    # Move targets (None during inference).
+    # from/to square as a plain 0-63 chess square index (chess.SQUARES order).
+    # from/to file/rank are vocab token IDs reusing the shared file_*/rank_* tokens.
+    from_square_id: Optional[int] = None   # 0-63
+    to_square_id:   Optional[int] = None   # 0-63
+    from_file_id:   Optional[int] = None   # vocab ID of file_a..file_h
+    from_rank_id:   Optional[int] = None   # vocab ID of rank_1..rank_8
+    to_file_id:     Optional[int] = None
+    to_rank_id:     Optional[int] = None
+    promo_id:       Optional[int] = None   # None also when no promotion
 
     # Metadata (not fed to model; used for splits and per-bucket eval)
     game_id: str = ""
@@ -253,10 +260,15 @@ def tokenize_position(
         rank_toks.append(t[f"rank_{_RANKS[chess.square_rank(sq)]}"])
 
     # --- Move targets -------------------------------------------------------
-    from_id = to_id = promo_id = None
+    from_sq = to_sq = from_file = from_rank = to_file = to_rank = promo_id = None
     if uci_move is not None:
-        from_id = t[f"f_{uci_move[:2]}"]
-        to_id = t[f"t_{uci_move[2:4]}"]
+        from_sq_name, to_sq_name = uci_move[:2], uci_move[2:4]
+        from_sq = chess.parse_square(from_sq_name)   # 0-63
+        to_sq   = chess.parse_square(to_sq_name)
+        from_file = t[f"file_{_FILES[chess.square_file(from_sq)]}"]
+        from_rank = t[f"rank_{_RANKS[chess.square_rank(from_sq)]}"]
+        to_file   = t[f"file_{_FILES[chess.square_file(to_sq)]}"]
+        to_rank   = t[f"rank_{_RANKS[chess.square_rank(to_sq)]}"]
         if len(uci_move) > 4:
             promo_id = t[_PROMO_CHAR_TO_TOKEN[uci_move[4].lower()]]
 
@@ -273,8 +285,12 @@ def tokenize_position(
         black_elo=black_elo,
         white_clock_seconds=white_clock_seconds,
         black_clock_seconds=black_clock_seconds,
-        from_square_id=from_id,
-        to_square_id=to_id,
+        from_square_id=from_sq,
+        to_square_id=to_sq,
+        from_file_id=from_file,
+        from_rank_id=from_rank,
+        to_file_id=to_file,
+        to_rank_id=to_rank,
         promo_id=promo_id,
         game_id=game_id,
         elo_bucket=elo_bucket,

@@ -141,9 +141,10 @@ class ChessformerModel(nn.Module):
         ])
         self.norm = _RMSNorm(d_model)
 
-        self.head_from  = nn.Linear(d_model, self.N_SQUARES, bias=False)
-        self.head_to    = nn.Linear(d_model, self.N_SQUARES, bias=False)
-        self.head_promo = nn.Linear(d_model, self.N_PROMO,   bias=False)
+        # Single shared head for from-square and to-square prediction (both over 64 squares).
+        # Promo head is separate (4 classes).
+        self.head_square = nn.Linear(d_model, self.N_SQUARES, bias=False)
+        self.head_promo  = nn.Linear(d_model, self.N_PROMO,   bias=False)
 
         # Bracket boundaries and token IDs for vectorized soft-blend embedding.
         # Registered as buffers so they move with the model to the right device.
@@ -151,6 +152,10 @@ class ChessformerModel(nn.Module):
         self.register_buffer("clock_bounds", torch.tensor(CLOCK_BRACKETS_S, dtype=torch.float32))
         self.register_buffer("elo_ids",   torch.tensor(list(vocab.elo_bracket_ids),   dtype=torch.long))
         self.register_buffer("clock_ids", torch.tensor(list(vocab.clock_bracket_ids), dtype=torch.long))
+
+        # Role token IDs for the move suffix — fixed scalars, registered as buffers.
+        self.register_buffer("from_tok_id", torch.tensor(vocab.from_tok_id, dtype=torch.long))
+        self.register_buffer("to_tok_id",   torch.tensor(vocab.to_tok_id,   dtype=torch.long))
 
         self._init_weights()
 
@@ -266,9 +271,21 @@ class ChessformerModel(nn.Module):
         pos0 = self.move_pos.weight[0].to(dtype)
         pos1 = self.move_pos.weight[1].to(dtype)
         pos2 = self.move_pos.weight[2].to(dtype)
-        bos_emb  = (self.move_bos.to(dtype) + pos0).unsqueeze(0).unsqueeze(0).expand(B, 1, -1)
-        from_emb = (self.emb(move_ids[:, 0].clamp(min=0)) + pos1).unsqueeze(1)
-        to_emb   = (self.emb(move_ids[:, 1].clamp(min=0)) + pos2).unsqueeze(1)
+        bos_emb = (self.move_bos.to(dtype) + pos0).unsqueeze(0).unsqueeze(0).expand(B, 1, -1)
+
+        # from/to embeddings reuse shared file_*/rank_* tokens (like pieces).
+        # Role is distinguished by from_tok / to_tok, not by separate token sets.
+        # move_ids: [B, 4] = [from_file_id, from_rank_id, to_file_id, to_rank_id]
+        from_role = self.emb.weight[self.from_tok_id].to(dtype)  # [d]
+        to_role   = self.emb.weight[self.to_tok_id  ].to(dtype)  # [d]
+        from_emb  = (from_role
+                     + self.emb(move_ids[:, 0].clamp(min=0))
+                     + self.emb(move_ids[:, 1].clamp(min=0))
+                     + pos1).unsqueeze(1)
+        to_emb    = (to_role
+                     + self.emb(move_ids[:, 2].clamp(min=0))
+                     + self.emb(move_ids[:, 3].clamp(min=0))
+                     + pos2).unsqueeze(1)
         move_seq = torch.cat([bos_emb, from_emb, to_emb], dim=1)
 
         x   = torch.cat([board, move_seq], dim=1)
@@ -339,9 +356,9 @@ class ChessformerModel(nn.Module):
             x = block(x, mask)
         x = self.norm(x)
         return (
-            self.head_from(x[:, board_len]),
-            self.head_to(x[:, board_len + 1]),
-            self.head_promo(x[:, board_len + 2]),
+            self.head_square(x[:, board_len]),      # from-square logits [B, 64]
+            self.head_square(x[:, board_len + 1]),  # to-square logits   [B, 64]
+            self.head_promo(x[:, board_len + 2]),   # promo logits       [B, 4]
         )
 
     # -----------------------------------------------------------------------
@@ -362,29 +379,54 @@ class ChessformerModel(nn.Module):
         black_clock_s:  torch.Tensor,
         temperature:    float = 1.0,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Autoregressively sample from-sq → to-sq → promo (3 forward passes)."""
+        """Autoregressively sample from-sq → to-sq → promo (3 forward passes).
+
+        Returns (from_sq, to_sq, promo_id) as 0-based indices:
+          from_sq / to_sq: 0-63 (chess.SQUARES order)
+          promo_id:        0-3  (offset relative to vocab.promo_offset)
+        """
         B      = meta_ids.shape[0]
         device = meta_ids.device
-        vocab  = self.vocab
         board  = (meta_ids, color_ids, piece_type_ids, file_ids, rank_ids,
                   white_elo, black_elo, white_clock_s, black_clock_s)
-        dummy  = torch.zeros(B, 3, dtype=torch.long, device=device)
+        # move_ids: [B, 4] = [from_file_id, from_rank_id, to_file_id, to_rank_id]
+        dummy = torch.zeros(B, 4, dtype=torch.long, device=device)
 
         from_logits, _, _ = self.forward(*board, dummy)
-        from_local = _sample_logits(from_logits, temperature)
-        from_ids   = from_local + vocab.from_square_offset
+        from_sq = _sample_logits(from_logits, temperature)  # [B], 0-63
 
-        dummy2 = dummy.clone(); dummy2[:, 0] = from_ids
+        # Convert predicted from-square to file/rank token IDs for the next pass
+        from_file_ids, from_rank_ids = self._sq_to_file_rank(from_sq, device)
+        dummy2 = dummy.clone()
+        dummy2[:, 0] = from_file_ids
+        dummy2[:, 1] = from_rank_ids
+
         _, to_logits, _ = self.forward(*board, dummy2)
-        to_local = _sample_logits(to_logits, temperature)
-        to_ids   = to_local + vocab.to_square_offset
+        to_sq = _sample_logits(to_logits, temperature)  # [B], 0-63
 
-        dummy3 = dummy2.clone(); dummy3[:, 1] = to_ids
+        to_file_ids, to_rank_ids = self._sq_to_file_rank(to_sq, device)
+        dummy3 = dummy2.clone()
+        dummy3[:, 2] = to_file_ids
+        dummy3[:, 3] = to_rank_ids
+
         _, _, promo_logits = self.forward(*board, dummy3)
-        promo_local = _sample_logits(promo_logits, temperature)
-        promo_ids   = promo_local + vocab.promo_offset
+        promo_local = _sample_logits(promo_logits, temperature)  # [B], 0-3
 
-        return from_ids, to_ids, promo_ids
+        return from_sq, to_sq, promo_local
+
+    def _sq_to_file_rank(self, sq: torch.Tensor, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        """Convert 0-63 square indices to (file_token_id, rank_token_id) tensors."""
+        # chess.SQUARES: sq = rank*8 + file  (a1=0, b1=1, ..., h8=63)
+        file_idx = sq % 8   # 0=a .. 7=h
+        rank_idx = sq // 8  # 0=1 .. 7=8
+        # Recover vocab IDs using the known offsets of file_a and rank_1 in the vocab.
+        # file_a token ID is self.vocab.token_to_id["file_a"], contiguous through file_h.
+        file_a_id = self.vocab.token_to_id["file_a"]
+        rank_1_id = self.vocab.token_to_id["rank_1"]
+        return (
+            torch.tensor(file_a_id, device=device) + file_idx,
+            torch.tensor(rank_1_id, device=device) + rank_idx,
+        )
 
     @torch.no_grad()
     def get_move_probs(
@@ -407,14 +449,18 @@ class ChessformerModel(nn.Module):
         device = meta_ids.device
         board  = (meta_ids, color_ids, piece_type_ids, file_ids, rank_ids,
                   white_elo, black_elo, white_clock_s, black_clock_s)
-        dummy = torch.zeros(1, 3, dtype=torch.long, device=device)
+        dummy = torch.zeros(1, 4, dtype=torch.long, device=device)
 
         from_logits, _, _ = self.forward(*board, dummy)
         from_probs = F.softmax(from_logits[0], dim=-1).cpu()  # [64]
 
         best_from = int(from_probs.argmax())
+        from_file_ids, from_rank_ids = self._sq_to_file_rank(
+            torch.tensor([best_from], device=device), device
+        )
         dummy2 = dummy.clone()
-        dummy2[0, 0] = best_from + self.vocab.from_square_offset
+        dummy2[0, 0] = from_file_ids[0]
+        dummy2[0, 1] = from_rank_ids[0]
         _, to_logits, _ = self.forward(*board, dummy2)
         to_probs = F.softmax(to_logits[0], dim=-1).cpu()  # [64]
 

@@ -158,8 +158,6 @@ def main(cfg: DictConfig) -> None:
 
     # --- Trainer -------------------------------------------------------------
     vocab_offsets = {
-        "from":  vocab.from_square_offset,
-        "to":    vocab.to_square_offset,
         "promo": vocab.promo_offset,
     }
     trainer = Trainer(

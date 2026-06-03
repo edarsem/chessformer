@@ -182,8 +182,8 @@ class Trainer:
                 black_clock_s  = batch["black_clock_s"],
                 move_ids       = _make_move_ids(batch, self.device),
             )
-            from_target = batch["from_sq"] - self.offsets["from"]
-            to_target   = batch["to_sq"]   - self.offsets["to"]
+            from_target = batch["from_sq"]   # 0-63
+            to_target   = batch["to_sq"]     # 0-63
             loss        = F.cross_entropy(from_logits, from_target) + F.cross_entropy(to_logits, to_target)
 
             promo_mask = batch["promo"] >= 0
@@ -222,8 +222,8 @@ class Trainer:
                 black_clock_s  = batch["black_clock_s"],
                 move_ids       = _make_move_ids(batch, self.device),
             )
-            from_target = batch["from_sq"] - self.offsets["from"]
-            to_target   = batch["to_sq"]   - self.offsets["to"]
+            from_target = batch["from_sq"]   # 0-63
+            to_target   = batch["to_sq"]     # 0-63
             from_loss   = F.cross_entropy(from_logits, from_target)
             to_loss     = F.cross_entropy(to_logits,   to_target)
 
@@ -315,7 +315,10 @@ def _to_device(batch: dict, device: torch.device) -> dict:
 
 
 def _make_move_ids(batch: dict, device: torch.device) -> torch.Tensor:
-    return torch.stack([batch["from_sq"], batch["to_sq"], batch["promo"]], dim=1).to(device)
+    # [B, 4]: from_file_id, from_rank_id, to_file_id, to_rank_id
+    return torch.stack(
+        [batch["from_file"], batch["from_rank"], batch["to_file"], batch["to_rank"]], dim=1
+    ).to(device)
 
 
 def build_lr_schedule(

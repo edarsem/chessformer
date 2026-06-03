@@ -65,9 +65,13 @@ GAMES_SCHEMA = pa.schema([
     pa.field("piece_type_tokens",    pa.list_(pa.int8())),
     pa.field("file_tokens",          pa.list_(pa.int8())),
     pa.field("rank_tokens",          pa.list_(pa.int8())),
-    pa.field("from_square_id",       pa.int16()),
-    pa.field("to_square_id",         pa.int16()),
-    pa.field("promo_id",             pa.int16()),     # -1 = no promotion
+    pa.field("from_square_id",       pa.int8()),   # 0-63 chess square index
+    pa.field("to_square_id",         pa.int8()),   # 0-63 chess square index
+    pa.field("from_file_id",         pa.int8()),   # vocab ID of file_a..file_h
+    pa.field("from_rank_id",         pa.int8()),   # vocab ID of rank_1..rank_8
+    pa.field("to_file_id",           pa.int8()),
+    pa.field("to_rank_id",           pa.int8()),
+    pa.field("promo_id",             pa.int16()),  # -1 = no promotion
 ])
 
 PUZZLES_SCHEMA = pa.schema([
@@ -84,8 +88,12 @@ PUZZLES_SCHEMA = pa.schema([
     pa.field("piece_type_tokens",    pa.list_(pa.int8())),
     pa.field("file_tokens",          pa.list_(pa.int8())),
     pa.field("rank_tokens",          pa.list_(pa.int8())),
-    pa.field("from_square_id",       pa.int16()),
-    pa.field("to_square_id",         pa.int16()),
+    pa.field("from_square_id",       pa.int8()),
+    pa.field("to_square_id",         pa.int8()),
+    pa.field("from_file_id",         pa.int8()),
+    pa.field("from_rank_id",         pa.int8()),
+    pa.field("to_file_id",           pa.int8()),
+    pa.field("to_rank_id",           pa.int8()),
     pa.field("promo_id",             pa.int16()),
 ])
 
@@ -109,8 +117,12 @@ def pos_to_game_row(pos: PositionTokens, avg_elo: int, elo_spread: int) -> dict:
         "piece_type_tokens":   pos.piece_type_tokens,
         "file_tokens":         pos.file_tokens,
         "rank_tokens":         pos.rank_tokens,
-        "from_square_id":      pos.from_square_id,
-        "to_square_id":        pos.to_square_id,
+        "from_square_id":      pos.from_square_id if pos.from_square_id is not None else -1,
+        "to_square_id":        pos.to_square_id   if pos.to_square_id   is not None else -1,
+        "from_file_id":        pos.from_file_id   if pos.from_file_id   is not None else -1,
+        "from_rank_id":        pos.from_rank_id   if pos.from_rank_id   is not None else -1,
+        "to_file_id":          pos.to_file_id     if pos.to_file_id     is not None else -1,
+        "to_rank_id":          pos.to_rank_id     if pos.to_rank_id     is not None else -1,
         "promo_id":            pos.promo_id if pos.promo_id is not None else -1,
     }
 
@@ -131,8 +143,12 @@ def pos_to_puzzle_row(pos: PositionTokens, puzzle_rating: int, seq_index: int) -
         "piece_type_tokens":     pos.piece_type_tokens,
         "file_tokens":           pos.file_tokens,
         "rank_tokens":           pos.rank_tokens,
-        "from_square_id":        pos.from_square_id if is_solver else -1,
-        "to_square_id":          pos.to_square_id if is_solver else -1,
+        "from_square_id":        (pos.from_square_id if pos.from_square_id is not None else -1) if is_solver else -1,
+        "to_square_id":          (pos.to_square_id   if pos.to_square_id   is not None else -1) if is_solver else -1,
+        "from_file_id":          (pos.from_file_id   if pos.from_file_id   is not None else -1) if is_solver else -1,
+        "from_rank_id":          (pos.from_rank_id   if pos.from_rank_id   is not None else -1) if is_solver else -1,
+        "to_file_id":            (pos.to_file_id     if pos.to_file_id     is not None else -1) if is_solver else -1,
+        "to_rank_id":            (pos.to_rank_id     if pos.to_rank_id     is not None else -1) if is_solver else -1,
         "promo_id":              (pos.promo_id if pos.promo_id is not None else -1) if is_solver else -1,
     }
 

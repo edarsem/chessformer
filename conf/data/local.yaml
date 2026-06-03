@@ -1,0 +1,58 @@
+# Train source: 2018-01 (compressed)
+train_pgn_source: data/compressed/lichess_db_standard_rated_2018-01.pgn.zst
+
+# Val/test source: 2017-12 (compressed)
+valtest_pgn_source: data/compressed/lichess_db_standard_rated_2017-12.pgn.zst
+
+# Puzzle source
+puzzles_source: data/raw_puzzles/lichess_db_puzzle.csv
+puzzles_csv:    data/raw_puzzles/lichess_db_puzzle.csv
+
+# preprocess.py mode: train | valtest | puzzles | all
+mode: all
+
+# --- Train sizes ---------------------------------------------------------
+# None = use all games in the source file
+train_games: 100000
+
+# make_splits.py produces two train subsets from all_games_train.parquet
+train_games_tiny: 200       # ~a few batches; smoke tests and CI
+train_games_small: 100000   # local training runs
+
+# --- Val (games) ---------------------------------------------------------
+# Total qualifying games for val (from 2017-12), split 50/50 by hash later.
+# Qualifying = avg Elo in [1000, 2900] and |white-black| <= elo_spread_max.
+valtest_games: 10000
+
+# Max |white_elo - black_elo| for a game to be eligible for a bucket.
+elo_spread_max: 200
+
+# --- Test (games) --------------------------------------------------------
+# test_plain: first N games with valid Elo from 2017-12 (no Elo range restriction)
+test_plain_games: 10000
+
+# test_elo: scan 2017-12 starting from game test_elo_skip_games,
+#           collect up to test_elo_games_per_bucket per Elo bucket (1000-2900)
+test_elo_skip_games: 10000
+test_elo_scan_games: 200000
+test_elo_games_per_bucket: 500
+
+# --- Val/test (puzzles) --------------------------------------------------
+val_puzzles: 2000
+test_puzzles: 8000
+
+# Puzzle difficulty filter (null = no filter)
+puzzle_rating_min: null
+puzzle_rating_max: null
+
+# --- Reproducibility -----------------------------------------------------
+split_seed: 42
+
+# --- Output files (written by preprocess.py / make_splits.py) -----------
+train_games_tiny_file:  ${paths.processed_dir}/train_games_tiny.parquet
+train_games_small_file: ${paths.processed_dir}/train_games_small.parquet
+val_games_file:         ${paths.processed_dir}/val_games.parquet
+val_puzzles_file:       ${paths.processed_dir}/val_puzzles.parquet
+test_games_file:        ${paths.processed_dir}/test_games.parquet
+test_games_elo_file:    ${paths.processed_dir}/test_games_elo.parquet
+test_puzzles_file:      ${paths.processed_dir}/test_puzzles.parquet

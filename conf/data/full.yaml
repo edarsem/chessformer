@@ -1,0 +1,22 @@
+# Dataset config for full GPU training runs
+pgn_source: ${paths.data_dir}/raw_pgn/lichess_db_standard_rated_2014-09.pgn
+puzzles_source: ${paths.data_dir}/raw_puzzles/lichess_db_puzzle.csv
+
+train_games: null   # null = use all available
+
+val_games_per_elo_bucket: 50
+test_games_per_elo_bucket: 500
+
+val_puzzles: 2000
+test_puzzles: 10000
+
+puzzle_rating_min: null
+puzzle_rating_max: null
+
+split_seed: 42
+
+train_games_file: ${paths.processed_dir}/train_games.parquet
+val_games_file: ${paths.processed_dir}/val_games.parquet
+val_puzzles_file: ${paths.processed_dir}/val_puzzles.parquet
+test_games_file: ${paths.processed_dir}/test_games.parquet
+test_puzzles_file: ${paths.processed_dir}/test_puzzles.parquet

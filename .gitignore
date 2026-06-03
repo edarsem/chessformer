@@ -2,6 +2,7 @@ lichess.token
 __pycache__/
 *.pyc
 data/
+!conf/data/
 tmp/
 .DS_Store
 chessformer/play.ipynb

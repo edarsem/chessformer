@@ -1,0 +1,31 @@
+# Kaggle: processed parquets mounted as a dataset at /kaggle/input/chessformer-data/
+# Raw PGN/puzzle sources are not needed when training from parquets.
+train_pgn_source: null
+valtest_pgn_source: null
+puzzles_source: null
+puzzles_csv: null
+
+mode: all
+
+train_games: 100000
+train_games_tiny: 200
+train_games_small: 100000
+valtest_games: 10000
+elo_spread_max: 200
+test_plain_games: 10000
+test_elo_skip_games: 10000
+test_elo_scan_games: 200000
+test_elo_games_per_bucket: 500
+val_puzzles: 2000
+test_puzzles: 8000
+puzzle_rating_min: null
+puzzle_rating_max: null
+split_seed: 42
+
+train_games_tiny_file:  ${paths.processed_dir}/train_games_tiny.parquet
+train_games_small_file: ${paths.processed_dir}/train_games_small.parquet
+val_games_file:         ${paths.processed_dir}/val_games.parquet
+val_puzzles_file:       ${paths.processed_dir}/val_puzzles.parquet
+test_games_file:        ${paths.processed_dir}/test_games.parquet
+test_games_elo_file:    ${paths.processed_dir}/test_games_elo.parquet
+test_puzzles_file:      ${paths.processed_dir}/test_puzzles.parquet

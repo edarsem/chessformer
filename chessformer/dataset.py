@@ -6,9 +6,9 @@ Dataset and DataLoader utilities for reading tokenized chess positions from parq
 Each parquet row is one position with a known move (from_square_id always set for game rows).
 Data is loaded fully into memory at init time for fast random access during shuffled training.
 
-Scalar fields (elo, clock, from/to/promo IDs) are stored as numpy arrays so __getitem__
-can use torch.from_numpy (zero-copy) instead of torch.tensor (allocates + copies).
-Variable-length lists (meta, piece tokens) must stay as Python lists since lengths differ.
+All variable-length columns are stored as padded int16 numpy arrays (not Python lists) so
+that forked DataLoader workers share memory via copy-on-write. Python lists break CoW because
+Python's reference counting writes to every object on access, duplicating pages across workers.
 """
 
 from __future__ import annotations
@@ -32,12 +32,36 @@ class PositionDataset(Dataset):
         df = pl.read_parquet(parquet_path)
         df = df.filter(pl.col("from_square_id") >= 0)
 
-        # Variable-length lists: must stay as Python lists (ragged rows)
-        self.meta_tokens       = df["meta_tokens"].to_list()
-        self.color_tokens      = df["color_tokens"].to_list()
-        self.piece_type_tokens = df["piece_type_tokens"].to_list()
-        self.file_tokens       = df["file_tokens"].to_list()
-        self.rank_tokens       = df["rank_tokens"].to_list()
+        n = len(df)
+
+        # Variable-length columns: pad into int16 numpy arrays so forked workers
+        # share memory via CoW (Python lists break CoW via refcount writes).
+        meta_list       = df["meta_tokens"].to_list()
+        color_list      = df["color_tokens"].to_list()
+        piece_type_list = df["piece_type_tokens"].to_list()
+        file_list       = df["file_tokens"].to_list()
+        rank_list       = df["rank_tokens"].to_list()
+
+        meta_max  = max(len(x) for x in meta_list)
+        piece_max = max(len(x) for x in color_list)
+
+        self.meta_len  = np.array([len(x) for x in meta_list],  dtype=np.int16)
+        self.piece_len = np.array([len(x) for x in color_list], dtype=np.int16)
+
+        self.meta_tokens       = np.zeros((n, meta_max),  dtype=np.int16)
+        self.color_tokens      = np.zeros((n, piece_max), dtype=np.int16)
+        self.piece_type_tokens = np.zeros((n, piece_max), dtype=np.int16)
+        self.file_tokens       = np.zeros((n, piece_max), dtype=np.int16)
+        self.rank_tokens       = np.zeros((n, piece_max), dtype=np.int16)
+
+        for i, (m, c, pt, f, r) in enumerate(
+            zip(meta_list, color_list, piece_type_list, file_list, rank_list)
+        ):
+            self.meta_tokens[i, :len(m)]  = m
+            self.color_tokens[i, :len(c)] = c
+            self.piece_type_tokens[i, :len(pt)] = pt
+            self.file_tokens[i, :len(f)]  = f
+            self.rank_tokens[i, :len(r)]  = r
 
         # Fixed-size scalars: numpy arrays → torch.from_numpy in __getitem__ (zero-copy)
         self.white_elo    = df["white_elo"].to_numpy().astype(np.int64)
@@ -47,18 +71,20 @@ class PositionDataset(Dataset):
         self.from_sq      = df["from_square_id"].to_numpy().astype(np.int64)
         self.to_sq        = df["to_square_id"].to_numpy().astype(np.int64)
         self.promo        = df["promo_id"].to_numpy().astype(np.int64)
-        self.elo_bucket   = df["elo_bucket"].to_list() if "elo_bucket" in df.columns else [""] * len(df)
+        self.elo_bucket   = df["elo_bucket"].to_list() if "elo_bucket" in df.columns else [""] * n
 
     def __len__(self) -> int:
         return len(self.from_sq)
 
     def __getitem__(self, idx: int) -> dict:
+        ml = int(self.meta_len[idx])
+        pl = int(self.piece_len[idx])
         return {
-            "meta_ids":       torch.tensor(self.meta_tokens[idx],       dtype=torch.long),
-            "color_ids":      torch.tensor(self.color_tokens[idx],      dtype=torch.long),
-            "piece_type_ids": torch.tensor(self.piece_type_tokens[idx], dtype=torch.long),
-            "file_ids":       torch.tensor(self.file_tokens[idx],       dtype=torch.long),
-            "rank_ids":       torch.tensor(self.rank_tokens[idx],       dtype=torch.long),
+            "meta_ids":       torch.tensor(self.meta_tokens[idx, :ml].astype(np.int64),       dtype=torch.long),
+            "color_ids":      torch.tensor(self.color_tokens[idx, :pl].astype(np.int64),      dtype=torch.long),
+            "piece_type_ids": torch.tensor(self.piece_type_tokens[idx, :pl].astype(np.int64), dtype=torch.long),
+            "file_ids":       torch.tensor(self.file_tokens[idx, :pl].astype(np.int64),       dtype=torch.long),
+            "rank_ids":       torch.tensor(self.rank_tokens[idx, :pl].astype(np.int64),       dtype=torch.long),
             "white_elo":      torch.from_numpy(self.white_elo[idx:idx+1]).squeeze(0),
             "black_elo":      torch.from_numpy(self.black_elo[idx:idx+1]).squeeze(0),
             "white_clock_s":  torch.from_numpy(self.white_clock_s[idx:idx+1]).squeeze(0),

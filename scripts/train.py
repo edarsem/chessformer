@@ -91,11 +91,11 @@ def main(cfg: DictConfig) -> None:
         val_path,
         batch_size       = cfg.train.batch_size,
         shuffle          = False,
-        num_workers      = num_workers,
+        num_workers      = 0,  # val runs infrequently; workers waste RAM
         rank             = rank,
         world_size       = world_size,
         pin_memory       = (device.type == "cuda"),
-        persistent_workers = (num_workers > 0),
+        persistent_workers = False,
     )
 
     # --- Model ---------------------------------------------------------------

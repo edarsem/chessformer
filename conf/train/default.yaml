@@ -22,5 +22,12 @@ compile: false      # torch.compile — CUDA only, enable for GPU runs
 # Distributed training (activated via torchrun, not set here)
 # torchrun --nproc_per_node=N scripts/train.py
 
+# Conditioning dropout: teach the model to work without elo/clock/increment.
+# Each position has cond_dropout_rate chance of being flagged; each of the 5
+# conditioning fields (white_elo, black_elo, white_clock_s, black_clock_s,
+# increment_s) then independently drops to -1 with cond_field_drop_rate.
+cond_dropout_rate: 0.01
+cond_field_drop_rate: 0.5
+
 # Resume from checkpoint (null = start fresh)
 resume_from: null

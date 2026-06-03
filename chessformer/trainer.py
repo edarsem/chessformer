@@ -167,6 +167,7 @@ class Trainer:
 
     def train_step(self, batch: dict) -> dict:
         batch = _to_device(batch, self.device)
+        batch = _conditioning_dropout(batch, self.cfg.train, self.device)
         self.optimizer.zero_grad(set_to_none=True)
 
         with _autocast_ctx(self.device, self._autocast_dtype):
@@ -314,6 +315,38 @@ class Trainer:
 
 def _to_device(batch: dict, device: torch.device) -> dict:
     return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+
+
+def _conditioning_dropout(batch: dict, cfg_t, device: torch.device) -> dict:
+    """
+    Randomly mask conditioning scalars to their "unknown" sentinel values (-1 / -1.0).
+
+    Two-stage: first flag each position with probability cond_dropout_rate, then
+    independently drop each of the 5 conditioning fields with cond_field_drop_rate.
+    Only applied during training (not val).
+    """
+    rate = float(getattr(cfg_t, "cond_dropout_rate", 0.0))
+    if rate <= 0.0:
+        return batch
+
+    field_rate = float(getattr(cfg_t, "cond_field_drop_rate", 0.5))
+    B = batch["white_elo"].shape[0]
+
+    flagged   = torch.rand(B, device=device) < rate          # [B] — positions to affect
+    field_drop = torch.rand(B, 5, device=device) < field_rate # [B, 5] — which fields
+
+    # Only drop fields in flagged positions
+    drop = flagged.unsqueeze(1) & field_drop  # [B, 5]
+
+    _FIELDS_INT   = ["white_elo",    "black_elo"]
+    _FIELDS_FLOAT = ["white_clock_s", "black_clock_s", "increment_s"]
+
+    for i, key in enumerate(_FIELDS_INT):
+        batch[key] = torch.where(drop[:, i], torch.full_like(batch[key], -1), batch[key])
+    for j, key in enumerate(_FIELDS_FLOAT):
+        batch[key] = torch.where(drop[:, 2 + j], torch.full_like(batch[key], -1.0), batch[key])
+
+    return batch
 
 
 def _make_move_ids(batch: dict, device: torch.device) -> torch.Tensor:

@@ -149,6 +149,7 @@ def main(cfg: DictConfig) -> None:
             wandb.init(
                 project = cfg.wandb.project,
                 entity  = cfg.wandb.get("entity") or None,
+                name    = cfg.wandb.get("run_name") or None,
                 config  = {
                     "model":  dict(cfg.model),
                     "train":  dict(cfg.train),

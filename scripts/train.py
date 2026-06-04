@@ -146,16 +146,26 @@ def main(cfg: DictConfig) -> None:
     if rank == 0 and cfg.wandb.enabled:
         try:
             import wandb
+            n_params = sum(p.numel() for p in model.parameters())
             wandb.init(
                 project = cfg.wandb.project,
                 entity  = cfg.wandb.get("entity") or None,
                 name    = cfg.wandb.get("run_name") or None,
                 config  = {
-                    "model":  dict(cfg.model),
-                    "train":  dict(cfg.train),
-                    "n_params": sum(p.numel() for p in model.parameters()),
+                    "model":    dict(cfg.model),
+                    "train":    dict(cfg.train),
+                    "n_params": n_params,
+                    "n_params_M": round(n_params / 1e6, 1),
                 },
             )
+            # Log model summary as W&B summary so it appears at the top of the run
+            wandb.summary["model/n_params"]   = n_params
+            wandb.summary["model/n_params_M"] = round(n_params / 1e6, 1)
+            wandb.summary["model/d_model"]    = cfg.model.d_model
+            wandb.summary["model/n_layers"]   = cfg.model.n_layers
+            wandb.summary["model/n_heads"]    = cfg.model.n_heads
+            wandb.summary["train/peak_lr"]    = cfg.train.lr
+            wandb.summary["train/batch_size_total"] = cfg.train.batch_size * world_size
         except ImportError:
             print("wandb not installed — skipping")
 

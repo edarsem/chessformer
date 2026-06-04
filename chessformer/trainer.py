@@ -298,6 +298,16 @@ class Trainer:
         }, path)
         print(f"  checkpoint saved → {path}")
 
+        if self._wandb:
+            art = self._wandb.Artifact(
+                name=f"checkpoint-{self._wandb.run.id}",
+                type="model",
+                metadata={"step": step},
+            )
+            art.add_file(path)
+            self._wandb.log_artifact(art, aliases=["latest", f"step-{step}"])
+            print(f"  checkpoint uploaded to W&B artifact")
+
     def load_checkpoint(self, path: str) -> int:
         ckpt  = torch.load(path, map_location=self.device)
         model = self.model.module if hasattr(self.model, "module") else self.model

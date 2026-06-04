@@ -3,7 +3,7 @@ train_file: train_games_small_file   # or train_games_tiny_file
 
 batch_size: 256
 max_steps: 50000
-lr: 1e-3
+lr: 3e-4
 warmup_steps: 1000
 lr_schedule: cosine   # cosine | constant
 weight_decay: 0.01

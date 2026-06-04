@@ -38,6 +38,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -122,15 +124,17 @@ class ChessformerModel(nn.Module):
     def __init__(
         self,
         vocab: Vocab,
-        d_model: int   = 128,
-        n_heads: int   = 4,
-        n_layers: int  = 4,
-        ffn_mult: int  = 4,
-        dropout: float = 0.1,
+        d_model: int               = 128,
+        n_heads: int               = 4,
+        n_layers: int              = 4,
+        ffn_mult: int              = 4,
+        dropout: float             = 0.1,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
-        self.vocab   = vocab
-        self.d_model = d_model
+        self.vocab                  = vocab
+        self.d_model                = d_model
+        self.gradient_checkpointing = gradient_checkpointing
 
         self.emb      = nn.Embedding(vocab.vocab_size, d_model)
         self.move_bos = nn.Parameter(torch.empty(d_model))
@@ -368,8 +372,12 @@ class ChessformerModel(nn.Module):
             meta_ids, color_ids, piece_type_ids, file_ids, rank_ids,
             white_elo, black_elo, white_clock_s, black_clock_s, increment_s, move_ids,
         )
-        for block in self.blocks:
-            x = block(x, mask)
+        if self.gradient_checkpointing and self.training:
+            for block in self.blocks:
+                x = grad_checkpoint(block, x, mask, use_reentrant=False)
+        else:
+            for block in self.blocks:
+                x = block(x, mask)
         x = self.norm(x)
         return (
             self.head_square(x[:, board_len]),      # from-square logits [B, 64]

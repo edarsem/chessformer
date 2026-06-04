@@ -100,12 +100,13 @@ def main(cfg: DictConfig) -> None:
 
     # --- Model ---------------------------------------------------------------
     model = ChessformerModel(
-        vocab    = vocab,
-        d_model  = cfg.model.d_model,
-        n_heads  = cfg.model.n_heads,
-        n_layers = cfg.model.n_layers,
-        ffn_mult = cfg.model.ffn_mult,
-        dropout  = cfg.model.dropout,
+        vocab                  = vocab,
+        d_model                = cfg.model.d_model,
+        n_heads                = cfg.model.n_heads,
+        n_layers               = cfg.model.n_layers,
+        ffn_mult               = cfg.model.ffn_mult,
+        dropout                = cfg.model.dropout,
+        gradient_checkpointing = cfg.train.get("gradient_checkpointing", False),
     ).to(device)
 
     if rank == 0:
@@ -117,7 +118,8 @@ def main(cfg: DictConfig) -> None:
         print(f"{'='*60}")
 
     if cfg.train.get("compile", False) and device.type == "cuda":
-        model = torch.compile(model)
+        compile_mode = cfg.train.get("compile_mode", "default")
+        model = torch.compile(model, mode=compile_mode)
         if rank == 0:
             print("Model compiled with torch.compile")
 

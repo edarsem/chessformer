@@ -300,6 +300,11 @@ kbd {
       <input type="range" id="sl-bc" min="0" max="3600" step="10" value="120"
              oninput="document.getElementById('v-bc').textContent=fmtClock(+this.value)"
              onchange="setSetting('black_clock_s', +this.value)">
+
+      <label>Increment (seconds) <span class="val" id="v-inc">5s</span></label>
+      <input type="range" id="sl-inc" min="0" max="30" step="1" value="5"
+             oninput="document.getElementById('v-inc').textContent=this.value+'s'"
+             onchange="setSetting('increment_s', +this.value)">
     </div>
 
     <!-- Import -->
@@ -365,7 +370,7 @@ kbd {
 
       <div class="toggle-row">
         <label>Argmax (greedy)</label>
-        <input type="checkbox" id="chk-argmax" checked onchange="setSetting('argmax', this.checked)">
+        <input type="checkbox" id="chk-argmax" onchange="setSetting('argmax', this.checked)">
       </div>
       <div id="temp-row" style="display:none">
         <label>Temperature <span class="val" id="v-temp">1.0</span></label>
@@ -376,7 +381,7 @@ kbd {
 
       <div class="toggle-row" style="margin-top:4px">
         <label>Engine analysis (E)</label>
-        <input type="checkbox" id="chk-engine" onchange="setSetting('engine', this.checked)">
+        <input type="checkbox" id="chk-engine" checked onchange="setSetting('engine', this.checked)">
       </div>
 
       <div style="display:flex;gap:6px;margin-top:4px">
@@ -472,6 +477,7 @@ function render(s) {
   syncRange('sl-be',  s.black_elo,    'v-be',   v => v);
   syncRange('sl-wc',  s.white_clock_s,'v-wc',   fmtClock);
   syncRange('sl-bc',  s.black_clock_s,'v-bc',   fmtClock);
+  syncRange('sl-inc', s.increment_s,  'v-inc',  v => v + 's');
   syncRange('sl-temp',s.temperature,  'v-temp', v => v.toFixed(1));
   document.getElementById('chk-argmax').checked = s.argmax;
   document.getElementById('chk-engine').checked = s.engine;

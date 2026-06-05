@@ -62,9 +62,10 @@ class GameState:
     black_elo:      int              = 2800
     white_clock_s:  float            = 120.0
     black_clock_s:  float            = 120.0
+    increment_s:    float            = 5.0
     temperature:    float            = 1.0
-    argmax:         bool             = True
-    engine:         bool             = False            # show engine analysis arrows/probs
+    argmax:         bool             = False
+    engine:         bool             = True             # show engine analysis arrows/probs
     selected_sq:    Optional[int]    = None
     # Puzzle state
     puzzle_id:      Optional[str]    = None
@@ -141,6 +142,13 @@ def _render_svg(
         coordinates = False,
     )
 
+def _sq_to_file_rank_ids(sq: int) -> tuple[int, int]:
+    """Convert a 0-63 chess square index to (file_token_id, rank_token_id)."""
+    return (
+        _vocab.token_to_id["file_a"] + (sq % 8),
+        _vocab.token_to_id["rank_1"] + (sq // 8),
+    )
+
 def _board_to_inputs(board: chess.Board) -> dict:
     pos = tokenize_position(
         fen                 = board.fen(),
@@ -149,6 +157,7 @@ def _board_to_inputs(board: chess.Board) -> dict:
         black_elo           = _state.black_elo,
         white_clock_seconds = _state.white_clock_s,
         black_clock_seconds = _state.black_clock_s,
+        increment_seconds   = _state.increment_s,
         game_id             = "serve",
     )
     def t(lst, dtype=torch.long):
@@ -163,6 +172,7 @@ def _board_to_inputs(board: chess.Board) -> dict:
         "black_elo":      torch.tensor([_state.black_elo],    dtype=torch.long,    device=_device),
         "white_clock_s":  torch.tensor([_state.white_clock_s],dtype=torch.float32, device=_device),
         "black_clock_s":  torch.tensor([_state.black_clock_s],dtype=torch.float32, device=_device),
+        "increment_s":    torch.tensor([_state.increment_s],  dtype=torch.float32, device=_device),
     }
 
 def _analyze_board(board: chess.Board, top_from_k: int = 8) -> tuple[dict, Optional[chess.Move]]:
@@ -187,21 +197,22 @@ def _analyze_board(board: chess.Board, top_from_k: int = 8) -> tuple[dict, Optio
             legal_map[key] = m
 
     # Pass 1: from-square probabilities
-    dummy = torch.zeros(1, 3, dtype=torch.long, device=_device)
+    # move_ids: [B, 4] = [from_file_id, from_rank_id, to_file_id, to_rank_id]
+    dummy = torch.zeros(1, 4, dtype=torch.long, device=_device)
     with torch.no_grad():
         from_logits, _, _ = _model(
             meta_ids=batch["meta_ids"], color_ids=batch["color_ids"],
             piece_type_ids=batch["piece_type_ids"], file_ids=batch["file_ids"],
             rank_ids=batch["rank_ids"], white_elo=batch["white_elo"],
             black_elo=batch["black_elo"], white_clock_s=batch["white_clock_s"],
-            black_clock_s=batch["black_clock_s"], move_ids=dummy,
+            black_clock_s=batch["black_clock_s"], increment_s=batch["increment_s"],
+            move_ids=dummy,
         )
     from_probs = F.softmax(from_logits[0], dim=-1).cpu()
 
     # Always include all legal from-squares so we never miss legal moves.
     top_model = from_probs.topk(min(top_from_k, 64)).indices.tolist()
     legal_from = list({m.from_square for m in legal_all})
-    # Preserve order: model top-k first, then any legal from-squares not already included.
     seen: set[int] = set(top_model)
     candidate_from_sqs = top_model + [sq for sq in legal_from if sq not in seen]
 
@@ -209,15 +220,18 @@ def _analyze_board(board: chess.Board, top_from_k: int = 8) -> tuple[dict, Optio
     to_probs_primary: list[float] = [0.0] * 64
 
     for i, from_sq in enumerate(candidate_from_sqs):
+        file_id, rank_id = _sq_to_file_rank_ids(from_sq)
         dummy2 = dummy.clone()
-        dummy2[0, 0] = from_sq + _vocab.from_square_offset
+        dummy2[0, 0] = file_id
+        dummy2[0, 1] = rank_id
         with torch.no_grad():
             _, to_logits, _ = _model(
                 meta_ids=batch["meta_ids"], color_ids=batch["color_ids"],
                 piece_type_ids=batch["piece_type_ids"], file_ids=batch["file_ids"],
                 rank_ids=batch["rank_ids"], white_elo=batch["white_elo"],
                 black_elo=batch["black_elo"], white_clock_s=batch["white_clock_s"],
-                black_clock_s=batch["black_clock_s"], move_ids=dummy2,
+                black_clock_s=batch["black_clock_s"], increment_s=batch["increment_s"],
+                move_ids=dummy2,
             )
         to_probs = F.softmax(to_logits[0], dim=-1).cpu()
         if i == 0:
@@ -260,13 +274,19 @@ def _run_ai(board: chess.Board) -> Optional[chess.Move]:
             piece_type_ids=batch["piece_type_ids"], file_ids=batch["file_ids"],
             rank_ids=batch["rank_ids"], white_elo=batch["white_elo"],
             black_elo=batch["black_elo"], white_clock_s=batch["white_clock_s"],
-            black_clock_s=batch["black_clock_s"], temperature=t,
+            black_clock_s=batch["black_clock_s"], increment_s=batch["increment_s"],
+            temperature=t,
         )
-        f_sq    = int(from_ids[0].item())  - _vocab.from_square_offset
-        t_sq    = int(to_ids[0].item())    - _vocab.to_square_offset
-        p_local = int(promo_ids[0].item()) - _vocab.promo_offset
-        promo   = [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN][p_local] if p_local >= 0 else None
-        move    = chess.Move(f_sq, t_sq, promotion=promo)
+        f_sq    = int(from_ids[0].item())   # already 0-63
+        t_sq    = int(to_ids[0].item())     # already 0-63
+        p_local = int(promo_ids[0].item())  # already 0-3
+        piece   = board.piece_at(f_sq)
+        promo   = (
+            [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN][p_local]
+            if piece and piece.piece_type == chess.PAWN and chess.square_rank(t_sq) in (0, 7)
+            else None
+        )
+        move = chess.Move(f_sq, t_sq, promotion=promo)
         if board.is_legal(move):
             return move
     return random.choice(legal)
@@ -326,6 +346,7 @@ def _full_state_json(probs: Optional[dict] = None) -> dict:
         "black_elo":    _state.black_elo,
         "white_clock_s": _state.white_clock_s,
         "black_clock_s": _state.black_clock_s,
+        "increment_s":  _state.increment_s,
         "temperature":  _state.temperature,
         "argmax":       _state.argmax,
         "engine":       _state.engine,
@@ -497,6 +518,7 @@ class SettingsRequest(BaseModel):
     black_elo:     Optional[int]   = None
     white_clock_s: Optional[float] = None
     black_clock_s: Optional[float] = None
+    increment_s:   Optional[float] = None
     temperature:   Optional[float] = None
     argmax:        Optional[bool]  = None
     engine:        Optional[bool]  = None
@@ -509,6 +531,7 @@ def post_settings(req: SettingsRequest):
     if req.black_elo     is not None: _state.black_elo     = req.black_elo
     if req.white_clock_s is not None: _state.white_clock_s = req.white_clock_s
     if req.black_clock_s is not None: _state.black_clock_s = req.black_clock_s
+    if req.increment_s   is not None: _state.increment_s   = req.increment_s
     if req.temperature   is not None: _state.temperature   = req.temperature
     if req.argmax        is not None: _state.argmax        = req.argmax
     if req.engine        is not None: _state.engine        = req.engine

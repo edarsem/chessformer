@@ -2,7 +2,7 @@
 scripts/eval.py
 
 Offline evaluation: Elo-balanced games, unfiltered games, puzzles.
-Adapts to available hardware. Logs to W&B.
+Adapts to available hardware (1 or 2 GPUs, MPS, CPU). Logs to W&B.
 
 Usage (local):
     python scripts/eval.py checkpoint=checkpoints/chessformer_v0.pt split=test
@@ -12,9 +12,6 @@ Override batch size:
 
 Kaggle / cluster:
     python scripts/eval.py checkpoint=... data=kaggle split=test eval_batch_size=2048
-
-Val instead of test:
-    python scripts/eval.py checkpoint=... split=val wandb.enabled=false
 """
 
 from __future__ import annotations
@@ -25,10 +22,9 @@ import time
 
 import hydra
 import torch
+import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
-from rich.console import Console
-from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, MofNCompleteColumn
-from rich.table import Table
+from tqdm.auto import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,14 +33,8 @@ from chessformer.eval import eval_games, eval_puzzles
 from chessformer.model import ChessformerModel, unwrap_state_dict
 from chessformer.tokenizer import build_vocab
 
-console = Console()
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _load_model(ckpt_path: str, device: torch.device):
+def _load_model(ckpt_path: str, device: torch.device) -> tuple[nn.Module, object, int]:
     ckpt      = torch.load(ckpt_path, map_location=device)
     saved_cfg = OmegaConf.create(ckpt["cfg"])
     vocab     = build_vocab()
@@ -58,34 +48,33 @@ def _load_model(ckpt_path: str, device: torch.device):
     ).to(device)
     state = unwrap_state_dict(ckpt["model"])
     if device.type != "cuda":
-        state = {k: v.float() for k, v in state.items()}  # fp16 weights → fp32 for MPS/CPU
+        state = {k: v.float() for k, v in state.items()}
     model.load_state_dict(state, strict=True)
-    model.eval()  # disables dropout
+    model.eval()
     return model, saved_cfg, ckpt.get("step", 0)
 
 
 def _autocast_dtype(device: torch.device) -> torch.dtype | None:
     if device.type != "cuda":
         return None
-    major = torch.cuda.get_device_capability(device)[0]
-    return torch.bfloat16 if major >= 8 else torch.float16
+    return torch.bfloat16 if torch.cuda.get_device_capability(device)[0] >= 8 else torch.float16
 
 
 def _print_games(label: str, m: dict) -> None:
-    console.rule(f"[bold cyan]{label}[/]")
-    console.print(
-        f"  loss [yellow]{m['loss']:.4f}[/]  "
-        f"top-1 [green]{m['top1_acc']*100:.1f}%[/]  "
-        f"plausible [blue]{m['plausible_rate']*100:.1f}%[/]  "
-        f"n={m['n']:,}"
-    )
+    sep = "─" * 60
+    print(f"\n{sep}")
+    print(f"  {label}")
+    print(sep)
+    print(f"  loss      {m['loss']:.4f}")
+    print(f"  top-1     {m['top1_acc']*100:.2f}%")
+    print(f"  plausible {m['plausible_rate']*100:.2f}%   (p(correct move) ≥ 20% on each margin)")
+    print(f"  n         {m['n']:,}")
     if m.get("per_elo"):
-        t = Table("Elo bucket", "top-1 %", "plausible %", "n",
-                  show_header=True, header_style="bold dim", box=None)
+        print(f"\n  {'Elo bucket':14s}  {'top-1':>7}  {'plausible':>9}  {'n':>6}")
         for bkt in sorted(m["per_elo"]):
             b = m["per_elo"][bkt]
-            t.add_row(bkt, f"{b['top1_acc']*100:.1f}", f"{b['plausible_rate']*100:.1f}", str(b["n"]))
-        console.print(t)
+            print(f"  {bkt:14s}  {b['top1_acc']*100:6.1f}%  {b['plausible_rate']*100:8.1f}%  {b['n']:>6,}")
+    print(flush=True)
 
 
 def _log_wandb(wandb, split: str, games: dict, games_elo: dict | None,
@@ -113,10 +102,6 @@ def _log_wandb(wandb, split: str, games: dict, games_elo: dict | None,
     wandb.log(log, step=step)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
     split     = cfg.get("split", "test")
@@ -131,19 +116,27 @@ def main(cfg: DictConfig) -> None:
     )
     acd        = _autocast_dtype(device)
     batch_size = int(cfg.get("eval_batch_size", 512))
-    # On CUDA: more workers + pin memory for faster data loading
+    n_gpus     = torch.cuda.device_count() if device.type == "cuda" else 0
     workers    = 4 if device.type == "cuda" else 0
     pin_mem    = device.type == "cuda"
 
     model, saved_cfg, step = _load_model(ckpt_path, device)
     n_params = sum(p.numel() for p in model.parameters())
 
-    console.print(f"\n[bold]Checkpoint:[/] {ckpt_path}  step={step}")
-    console.print(f"[bold]Device:[/] {device}  autocast={'bf16' if acd==torch.bfloat16 else 'fp16' if acd else 'off'}")
-    console.print(f"[bold]Model:[/] {n_params/1e6:.1f}M params  d={saved_cfg.model.d_model}  "
-                  f"L={saved_cfg.model.n_layers}  H={saved_cfg.model.n_heads}  "
-                  f"(dropout={saved_cfg.model.dropout} — [dim]inactive in eval[/])")
-    console.print(f"[bold]Batch size:[/] {batch_size}  split={split}\n")
+    # Wrap with DataParallel if multiple GPUs available
+    # Scales batch size so each GPU sees the requested batch_size
+    if n_gpus > 1:
+        model      = nn.DataParallel(model)
+        batch_size = batch_size * n_gpus
+        print(f"DataParallel: {n_gpus} GPUs → effective batch size {batch_size}", flush=True)
+
+    print(f"\nCheckpoint : {ckpt_path}  (step {step})", flush=True)
+    print(f"Device     : {device}  n_gpus={max(n_gpus,1)}  "
+          f"autocast={'bf16' if acd==torch.bfloat16 else 'fp16' if acd else 'off'}", flush=True)
+    print(f"Model      : {n_params/1e6:.1f}M params  "
+          f"d={saved_cfg.model.d_model}  L={saved_cfg.model.n_layers}  "
+          f"H={saved_cfg.model.n_heads}  (dropout inactive in eval)", flush=True)
+    print(f"Batch size : {batch_size}  split={split}\n", flush=True)
 
     def games_loader(path: str):
         return make_loader(path, batch_size=batch_size, shuffle=False,
@@ -158,17 +151,13 @@ def main(cfg: DictConfig) -> None:
         games_elo_path = cfg.data.get("test_games_elo_file", None)
         puzzles_path   = cfg.data.test_puzzles_file
 
-    prog_cols = [TextColumn("[progress.description]{task.description}"),
-                 BarColumn(), MofNCompleteColumn(), TimeRemainingColumn()]
-
     # ── Elo-balanced games ───────────────────────────────────────────────
     t0     = time.perf_counter()
     loader = games_loader(games_path)
-    console.print(f"Games (Elo-balanced)  {len(loader)} batches …")
-    with Progress(*prog_cols, console=console) as prog:
-        task   = prog.add_task("  eval", total=len(loader))
-        games_m = eval_games(model, loader, device, acd, progress_cb=lambda: prog.advance(task))
-    console.print(f"  → {time.perf_counter()-t0:.1f}s")
+    bar    = tqdm(total=len(loader), desc="games (balanced)", unit="batch", leave=True)
+    games_m = eval_games(model, loader, device, acd, progress_cb=bar.update)
+    bar.close()
+    print(f"  done in {time.perf_counter()-t0:.1f}s", flush=True)
     _print_games(f"{split} / games (Elo-balanced)", games_m)
 
     # ── Unfiltered games ─────────────────────────────────────────────────
@@ -176,29 +165,31 @@ def main(cfg: DictConfig) -> None:
     if games_elo_path and os.path.exists(games_elo_path):
         t0     = time.perf_counter()
         loader = games_loader(games_elo_path)
-        console.print(f"\nGames (unfiltered)  {len(loader)} batches …")
-        with Progress(*prog_cols, console=console) as prog:
-            task        = prog.add_task("  eval", total=len(loader))
-            games_elo_m = eval_games(model, loader, device, acd, progress_cb=lambda: prog.advance(task))
-        console.print(f"  → {time.perf_counter()-t0:.1f}s")
+        bar    = tqdm(total=len(loader), desc="games (plain)  ", unit="batch", leave=True)
+        games_elo_m = eval_games(model, loader, device, acd, progress_cb=bar.update)
+        bar.close()
+        print(f"  done in {time.perf_counter()-t0:.1f}s", flush=True)
         _print_games(f"{split} / games (unfiltered)", games_elo_m)
 
     # ── Puzzles ──────────────────────────────────────────────────────────
+    # Puzzles are evaluated one at a time; use the base model to avoid DataParallel overhead
     import polars as pl
-    n_puzzles_total = pl.read_parquet(puzzles_path).select("puzzle_id").n_unique()
-    t0 = time.perf_counter()
-    console.print(f"\nPuzzles  {n_puzzles_total} puzzles …")
-    with Progress(*prog_cols, console=console) as prog:
-        task  = prog.add_task("  eval", total=n_puzzles_total)
-        puz_m = eval_puzzles(model, puzzles_path, device, acd, progress_cb=lambda: prog.advance(task))
-    console.print(f"  → {time.perf_counter()-t0:.1f}s")
-    console.rule("[bold cyan]Puzzles[/]")
-    console.print(
-        f"  loss [yellow]{puz_m['loss']:.4f}[/]  "
-        f"solved [green]{puz_m['accuracy']*100:.1f}%[/]  "
-        f"advancement [blue]{puz_m['advancement']*100:.1f}%[/]  "
-        f"n={puz_m['n_puzzles']:,}"
-    )
+    base_model       = model.module if isinstance(model, nn.DataParallel) else model
+    n_puzzles_total  = pl.read_parquet(puzzles_path).select("puzzle_id").n_unique()
+    t0  = time.perf_counter()
+    bar = tqdm(total=n_puzzles_total, desc="puzzles        ", unit="puzzle", leave=True)
+    puz_m = eval_puzzles(base_model, puzzles_path, device, acd, progress_cb=bar.update)
+    bar.close()
+    print(f"  done in {time.perf_counter()-t0:.1f}s", flush=True)
+
+    sep = "─" * 60
+    print(f"\n{sep}")
+    print(f"  {split} / puzzles")
+    print(sep)
+    print(f"  loss        {puz_m['loss']:.4f}")
+    print(f"  solved      {puz_m['accuracy']*100:.2f}%   (all moves correct)")
+    print(f"  advancement {puz_m['advancement']*100:.2f}%   (avg fraction of puzzle solved)")
+    print(f"  n           {puz_m['n_puzzles']:,}", flush=True)
 
     # ── W&B ─────────────────────────────────────────────────────────────
     if cfg.wandb.enabled:
@@ -212,9 +203,9 @@ def main(cfg: DictConfig) -> None:
             )
             _log_wandb(wandb, split, games_m, games_elo_m, puz_m, step)
             wandb.finish()
-            console.print("\n[green]Logged to W&B.[/]")
+            print("\nLogged to W&B.", flush=True)
         except ImportError:
-            console.print("[yellow]wandb not installed — skipping.[/]")
+            print("wandb not installed — skipping.")
 
 
 if __name__ == "__main__":

@@ -24,7 +24,6 @@ import chess
 import chess.pgn
 import chess.svg
 import torch
-import torch.nn.functional as F
 import uvicorn
 import hydra
 import polars as pl
@@ -36,8 +35,9 @@ from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from chessformer.model import ChessformerModel
-from chessformer.tokenizer import build_vocab, tokenize_position
+from chessformer.inference import analyze_position, board_to_inputs, pick_move
+from chessformer.model import ChessformerModel, unwrap_state_dict
+from chessformer.tokenizer import build_vocab
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -58,8 +58,8 @@ class GameState:
     history_idx:    int              = 0
     mode:           str              = "human_vs_ai"    # human_vs_ai | ai_vs_ai | human_vs_human | puzzle
     human_side:     str              = "white"          # white | black (human_vs_ai only)
-    white_elo:      int              = 2800
-    black_elo:      int              = 2800
+    white_elo:      int              = 2100
+    black_elo:      int              = 2100
     white_clock_s:  float            = 120.0
     black_clock_s:  float            = 120.0
     increment_s:    float            = 5.0
@@ -142,160 +142,24 @@ def _render_svg(
         coordinates = False,
     )
 
-def _sq_to_file_rank_ids(sq: int) -> tuple[int, int]:
-    """Convert a 0-63 chess square index to (file_token_id, rank_token_id)."""
-    return (
-        _vocab.token_to_id["file_a"] + (sq % 8),
-        _vocab.token_to_id["rank_1"] + (sq // 8),
+def _cond() -> dict:
+    """Package conditioning scalars from current game state for inference calls."""
+    return dict(
+        white_elo     = _state.white_elo,
+        black_elo     = _state.black_elo,
+        white_clock_s = _state.white_clock_s,
+        black_clock_s = _state.black_clock_s,
+        increment_s   = _state.increment_s,
     )
-
-def _board_to_inputs(board: chess.Board) -> dict:
-    pos = tokenize_position(
-        fen                 = board.fen(),
-        vocab               = _vocab,
-        white_elo           = _state.white_elo,
-        black_elo           = _state.black_elo,
-        white_clock_seconds = _state.white_clock_s,
-        black_clock_seconds = _state.black_clock_s,
-        increment_seconds   = _state.increment_s,
-        game_id             = "serve",
-    )
-    def t(lst, dtype=torch.long):
-        return torch.tensor([lst], dtype=dtype, device=_device)
-    return {
-        "meta_ids":       t(pos.meta_tokens),
-        "color_ids":      t(pos.color_tokens),
-        "piece_type_ids": t(pos.piece_type_tokens),
-        "file_ids":       t(pos.file_tokens),
-        "rank_ids":       t(pos.rank_tokens),
-        "white_elo":      torch.tensor([_state.white_elo],    dtype=torch.long,    device=_device),
-        "black_elo":      torch.tensor([_state.black_elo],    dtype=torch.long,    device=_device),
-        "white_clock_s":  torch.tensor([_state.white_clock_s],dtype=torch.float32, device=_device),
-        "black_clock_s":  torch.tensor([_state.black_clock_s],dtype=torch.float32, device=_device),
-        "increment_s":    torch.tensor([_state.increment_s],  dtype=torch.float32, device=_device),
-    }
-
-def _analyze_board(board: chess.Board, top_from_k: int = 8) -> tuple[dict, Optional[chess.Move]]:
-    """
-    Scan from-squares to compute joint from×to probabilities and find best legal move.
-
-    Always includes all legal from-squares in the scan (in addition to the model's
-    top-k predictions), so the result is never empty when legal moves exist.
-    Costs len(candidate_from_sqs)+1 forward passes.
-    """
-    legal_all = list(board.legal_moves)
-    if not legal_all:
-        return {"from_probs": [0.0]*64, "to_probs": [0.0]*64, "top_moves": []}, None
-
-    batch = _board_to_inputs(board)
-
-    # Build legal (from, to) → best move mapping (queen promo preferred)
-    legal_map: dict[tuple[int,int], chess.Move] = {}
-    for m in legal_all:
-        key = (m.from_square, m.to_square)
-        if key not in legal_map or m.promotion == chess.QUEEN:
-            legal_map[key] = m
-
-    # Pass 1: from-square probabilities
-    # move_ids: [B, 4] = [from_file_id, from_rank_id, to_file_id, to_rank_id]
-    dummy = torch.zeros(1, 4, dtype=torch.long, device=_device)
-    with torch.no_grad():
-        from_logits, _, _ = _model(
-            meta_ids=batch["meta_ids"], color_ids=batch["color_ids"],
-            piece_type_ids=batch["piece_type_ids"], file_ids=batch["file_ids"],
-            rank_ids=batch["rank_ids"], white_elo=batch["white_elo"],
-            black_elo=batch["black_elo"], white_clock_s=batch["white_clock_s"],
-            black_clock_s=batch["black_clock_s"], increment_s=batch["increment_s"],
-            move_ids=dummy,
-        )
-    from_probs = F.softmax(from_logits[0], dim=-1).cpu()
-
-    # Always include all legal from-squares so we never miss legal moves.
-    top_model = from_probs.topk(min(top_from_k, 64)).indices.tolist()
-    legal_from = list({m.from_square for m in legal_all})
-    seen: set[int] = set(top_model)
-    candidate_from_sqs = top_model + [sq for sq in legal_from if sq not in seen]
-
-    candidates: list[dict] = []
-    to_probs_primary: list[float] = [0.0] * 64
-
-    for i, from_sq in enumerate(candidate_from_sqs):
-        file_id, rank_id = _sq_to_file_rank_ids(from_sq)
-        dummy2 = dummy.clone()
-        dummy2[0, 0] = file_id
-        dummy2[0, 1] = rank_id
-        with torch.no_grad():
-            _, to_logits, _ = _model(
-                meta_ids=batch["meta_ids"], color_ids=batch["color_ids"],
-                piece_type_ids=batch["piece_type_ids"], file_ids=batch["file_ids"],
-                rank_ids=batch["rank_ids"], white_elo=batch["white_elo"],
-                black_elo=batch["black_elo"], white_clock_s=batch["white_clock_s"],
-                black_clock_s=batch["black_clock_s"], increment_s=batch["increment_s"],
-                move_ids=dummy2,
-            )
-        to_probs = F.softmax(to_logits[0], dim=-1).cpu()
-        if i == 0:
-            to_probs_primary = to_probs.tolist()
-        fp = float(from_probs[from_sq])
-        for to_sq in range(64):
-            candidates.append({"from": from_sq, "to": to_sq,
-                                "prob": fp * float(to_probs[to_sq])})
-
-    candidates.sort(key=lambda x: -x["prob"])
-
-    top_legal = [c for c in candidates if (c["from"], c["to"]) in legal_map][:5]
-
-    best_legal: Optional[chess.Move] = None
-    if top_legal:
-        best_legal = legal_map[(top_legal[0]["from"], top_legal[0]["to"])]
-    else:
-        best_legal = random.choice(legal_all)
-
-    return {
-        "from_probs": from_probs.tolist(),
-        "to_probs":   to_probs_primary,
-        "top_moves":  top_legal,
-    }, best_legal
-
 
 def _run_ai(board: chess.Board) -> Optional[chess.Move]:
-    legal = list(board.legal_moves)
-    if not legal:
-        return None
-    if _state.argmax:
-        _, best = _analyze_board(board)
-        return best or random.choice(legal)
-    # Sampling: retry up to 10 times, greedy fallback
-    batch = _board_to_inputs(board)
-    for attempt in range(10):
-        t = _state.temperature if attempt < 5 else 0.0
-        from_ids, to_ids, promo_ids = _model.sample_move(
-            meta_ids=batch["meta_ids"], color_ids=batch["color_ids"],
-            piece_type_ids=batch["piece_type_ids"], file_ids=batch["file_ids"],
-            rank_ids=batch["rank_ids"], white_elo=batch["white_elo"],
-            black_elo=batch["black_elo"], white_clock_s=batch["white_clock_s"],
-            black_clock_s=batch["black_clock_s"], increment_s=batch["increment_s"],
-            temperature=t,
-        )
-        f_sq    = int(from_ids[0].item())   # already 0-63
-        t_sq    = int(to_ids[0].item())     # already 0-63
-        p_local = int(promo_ids[0].item())  # already 0-3
-        piece   = board.piece_at(f_sq)
-        promo   = (
-            [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN][p_local]
-            if piece and piece.piece_type == chess.PAWN and chess.square_rank(t_sq) in (0, 7)
-            else None
-        )
-        move = chess.Move(f_sq, t_sq, promotion=promo)
-        if board.is_legal(move):
-            return move
-    return random.choice(legal)
-
+    return pick_move(_model, _vocab, _device, board, **_cond(),
+                     argmax=_state.argmax, temperature=_state.temperature)
 
 def _get_probs(board: chess.Board) -> Optional[dict]:
     if not _state.engine or _model is None or board.is_game_over():
         return None
-    probs, _ = _analyze_board(board)
+    probs, _ = analyze_position(_model, _vocab, _device, board, **_cond())
     return probs
 
 def _game_status(board: Optional[chess.Board] = None) -> str:
@@ -694,7 +558,7 @@ def main(cfg: DictConfig) -> None:
         ffn_mult = saved_cfg.model.ffn_mult,
         dropout  = saved_cfg.model.dropout,
     ).to(_device)
-    _model.load_state_dict(ckpt["model"], strict=False)
+    _model.load_state_dict(unwrap_state_dict(ckpt["model"]), strict=True)
     _model.eval()
     print(f"Model loaded  step={ckpt.get('step', 0)}  "
           f"params={sum(p.numel() for p in _model.parameters()):,}")

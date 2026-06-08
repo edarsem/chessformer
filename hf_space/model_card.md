@@ -21,6 +21,8 @@ A ~50M parameter transformer trained to **imitate human chess play across the fu
 
 ## What it does
 
+Attempts to predict the human move. The goal is for the model to learn the human way to play chess, and later to encode the position the way a human would see it, with human intuition, strength and time management.
+
 - **Strength is a dial.** Pass `white_elo=1200` and it plays like a 1200. Pass `white_elo=2800` and it plays like a 2800.
 - **No rules, no search.** Legal-move understanding is emergent from training data only.
 - **Clock-aware.** Conditioning on remaining time lets the model represent time-pressure play.
@@ -87,7 +89,7 @@ All numbers from the held-out test split (Lichess December 2017 — a different 
 | Puzzle solved (all moves correct) | **28.0%** |
 | Puzzle advancement (avg fraction solved) | **34.0%** |
 
-Accuracy is flat across 1100–2200 Elo, where training data is abundant. Puzzle-solving is fully emergent — the model was never trained on puzzles.
+Accuracy is flat and best across 1100–2200 Elo, where training data is abundant. Puzzle-solving is fully emergent — the model was never trained on puzzles.
 
 ## License
 

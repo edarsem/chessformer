@@ -27,3 +27,7 @@ display: ascii
 port: 5174
 open_browser: true
 eval_batch_size: 512   # override on CLI: eval_batch_size=2048
+
+# Eval head preprocessing
+eval_pgn_path: data/raw_pgn/lichess_db_standard_rated_2014-09.pgn
+eval_max_games: 5000  # games WITH eval annotations to collect

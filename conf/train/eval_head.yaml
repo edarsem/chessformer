@@ -1,0 +1,20 @@
+batch_size: 256
+max_steps: 20000
+lr: 1e-3
+warmup_steps: 500
+lr_schedule: cosine
+weight_decay: 0.0
+grad_clip: 1.0
+
+val_every: 500
+val_max_batches: 100
+checkpoint_every: 2000
+
+mixed_precision: true
+num_workers: 0
+compile: false
+compile_mode: default
+gradient_checkpointing: false
+
+# tanh clipping: reject |cp| > cp_clip before tanh scaling
+cp_clip: 12000.0  # keep mates (stored as 10000 cp) + a small margin

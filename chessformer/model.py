@@ -400,6 +400,38 @@ class ChessformerModel(nn.Module):
             self.head_promo(x[:, board_len + 2]),   # promo logits       [B, 4]
         )
 
+    def forward_board(
+        self,
+        meta_ids:       torch.Tensor,
+        color_ids:      torch.Tensor,
+        piece_type_ids: torch.Tensor,
+        file_ids:       torch.Tensor,
+        rank_ids:       torch.Tensor,
+        white_elo:      torch.Tensor,
+        black_elo:      torch.Tensor,
+        white_clock_s:  torch.Tensor,
+        black_clock_s:  torch.Tensor,
+        increment_s:    torch.Tensor,
+    ) -> torch.Tensor:
+        """Return hidden state at MOVE_BOS position [B, d_model].
+
+        This token attends to all board positions bidirectionally, making it a
+        compact board representation suitable for position evaluation.
+        """
+        dummy = torch.zeros(meta_ids.shape[0], 4, dtype=torch.long, device=meta_ids.device)
+        x, mask, board_len = self._build_sequence(
+            meta_ids, color_ids, piece_type_ids, file_ids, rank_ids,
+            white_elo, black_elo, white_clock_s, black_clock_s, increment_s, dummy,
+        )
+        if self.gradient_checkpointing and self.training:
+            for block in self.blocks:
+                x = grad_checkpoint(block, x, mask, use_reentrant=False)
+        else:
+            for block in self.blocks:
+                x = block(x, mask)
+        x = self.norm(x)
+        return x[:, board_len]  # [B, d_model]
+
     # -----------------------------------------------------------------------
     # Inference
     # -----------------------------------------------------------------------
@@ -518,6 +550,32 @@ class ChessformerModel(nn.Module):
             "to_probs":   to_probs.tolist(),
             "top_moves":  top_moves,
         }
+
+
+# ---------------------------------------------------------------------------
+# Eval head
+# ---------------------------------------------------------------------------
+
+class EvalHead(nn.Module):
+    """MLP predicting tanh-scaled Stockfish centipawn score from board repr."""
+
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, 1),
+            nn.Tanh(),
+        )
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, board_repr: torch.Tensor) -> torch.Tensor:
+        """board_repr: [B, d_model] → [B] predicted tanh(cp/400)."""
+        return self.net(board_repr).squeeze(-1)
 
 
 def _sample_logits(logits: torch.Tensor, temperature: float) -> torch.Tensor:

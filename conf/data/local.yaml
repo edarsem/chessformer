@@ -48,6 +48,10 @@ puzzle_rating_max: null
 # --- Reproducibility -----------------------------------------------------
 split_seed: 42
 
+# --- Eval-head data (positions with Stockfish cp_eval column) -----------
+eval_train_file: ${paths.processed_dir}/train_eval.parquet
+eval_val_file:   ${paths.processed_dir}/val_eval.parquet
+
 # --- Output files (written by preprocess.py / make_splits.py) -----------
 train_games_tiny_file:  ${paths.processed_dir}/train_games_tiny.parquet
 train_games_small_file: ${paths.processed_dir}/train_games_small.parquet

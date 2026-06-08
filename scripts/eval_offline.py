@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from chessformer.dataset import make_loader
 from chessformer.eval import eval_games, eval_puzzles
-from chessformer.model import ChessformerModel
+from chessformer.model import ChessformerModel, unwrap_state_dict
 from chessformer.tokenizer import build_vocab
 
 
@@ -53,7 +53,7 @@ def main(cfg: DictConfig) -> None:
         ffn_mult = saved_cfg.model.ffn_mult,
         dropout  = saved_cfg.model.dropout,
     ).to(device)
-    model.load_state_dict(ckpt["model"], strict=False)
+    model.load_state_dict(unwrap_state_dict(ckpt["model"]), strict=True)
     model.eval()
     step = ckpt.get("step", 0)
     print(f"Loaded model at step {step}  ({sum(p.numel() for p in model.parameters()):,} params)")

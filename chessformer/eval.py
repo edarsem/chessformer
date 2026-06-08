@@ -2,7 +2,7 @@
 chessformer/eval.py
 
 Evaluation functions for games and puzzles.
-Called by scripts/eval_offline.py (and optionally by the Trainer for quick val).
+Called by scripts/eval_offline.py and optionally by the Trainer for quick val.
 """
 
 from __future__ import annotations
@@ -35,21 +35,23 @@ def eval_games(
     Evaluate on game positions.
 
     Returns:
-        loss, top1_acc, top5_acc, legal_rate
-        per_elo: {bucket_str: {loss, top1_acc, top5_acc, legal_rate, n}}
+        loss, top1_acc, plausible_rate
+        per_elo: {bucket_str: {loss, top1_acc, plausible_rate, n}}
     """
     model.eval()
-    from_off = vocab.from_square_offset
-    to_off   = vocab.to_square_offset
-
-    totals = defaultdict(lambda: {"loss": 0.0, "top1": 0, "plausible": 0, "n": 0})
+    totals: dict = defaultdict(lambda: {"loss": 0.0, "top1": 0, "plausible": 0, "n": 0})
 
     for i, batch in enumerate(loader):
         if max_batches is not None and i >= max_batches:
             break
 
-        elo_bkts   = batch["elo_bucket"]
-        move_ids   = torch.stack([batch["from_sq"], batch["to_sq"], batch["promo"]], dim=1).to(device)
+        elo_bkts = batch["elo_bucket"]
+        move_ids = torch.stack([
+            batch["from_file"],
+            batch["from_rank"],
+            batch["to_file"],
+            batch["to_rank"],
+        ], dim=1).to(device)
 
         from_logits, to_logits, _ = model(
             meta_ids       = batch["meta_ids"].to(device),
@@ -61,11 +63,12 @@ def eval_games(
             black_elo      = batch["black_elo"].to(device),
             white_clock_s  = batch["white_clock_s"].to(device),
             black_clock_s  = batch["black_clock_s"].to(device),
+            increment_s    = batch["increment_s"].to(device),
             move_ids       = move_ids,
         )
 
-        from_target = batch["from_sq"].to(device) - from_off
-        to_target   = batch["to_sq"].to(device)   - to_off
+        from_target = batch["from_sq"].to(device)  # 0-63
+        to_target   = batch["to_sq"].to(device)    # 0-63
 
         loss = (F.cross_entropy(from_logits, from_target) + F.cross_entropy(to_logits, to_target)).item()
 
@@ -73,11 +76,10 @@ def eval_games(
         to_pred   = to_logits.argmax(-1)
         top1      = ((from_pred == from_target) & (to_pred == to_target))
 
-        # Plausible rate: correct move has >= 20% probability under each marginal
-        from_probs  = F.softmax(from_logits, dim=-1)                        # [B, 64]
-        to_probs    = F.softmax(to_logits,   dim=-1)                        # [B, 64]
-        from_p_gold = from_probs.gather(1, from_target.unsqueeze(1)).squeeze(1)  # [B]
-        to_p_gold   = to_probs.gather(1,   to_target.unsqueeze(1)).squeeze(1)    # [B]
+        from_probs  = F.softmax(from_logits, dim=-1)
+        to_probs    = F.softmax(to_logits,   dim=-1)
+        from_p_gold = from_probs.gather(1, from_target.unsqueeze(1)).squeeze(1)
+        to_p_gold   = to_probs.gather(1,   to_target.unsqueeze(1)).squeeze(1)
         plausible   = (from_p_gold >= 0.20) & (to_p_gold >= 0.20)
 
         B = len(elo_bkts)
@@ -103,7 +105,6 @@ def eval_games(
     return result
 
 
-
 # ---------------------------------------------------------------------------
 # Puzzles eval
 # ---------------------------------------------------------------------------
@@ -126,8 +127,6 @@ def eval_puzzles(
     Processes one puzzle at a time (puzzles vary in length and board state).
     """
     model.eval()
-    from_off = vocab.from_square_offset
-    to_off   = vocab.to_square_offset
 
     df = pl.read_parquet(parquet_path)
 
@@ -141,32 +140,44 @@ def eval_puzzles(
         if len(solver_rows) == 0:
             continue
 
-        n_solver   = len(solver_rows)
-        consecutive = 0
+        n_solver      = len(solver_rows)
+        consecutive   = 0
         found_mistake = False
 
         for row in solver_rows.iter_rows(named=True):
-            meta  = torch.tensor([row["meta_tokens"]],         dtype=torch.long,    device=device)
-            color = torch.tensor([row["color_tokens"]],        dtype=torch.long,    device=device)
-            ptype = torch.tensor([row["piece_type_tokens"]],   dtype=torch.long,    device=device)
-            filei = torch.tensor([row["file_tokens"]],         dtype=torch.long,    device=device)
-            ranki = torch.tensor([row["rank_tokens"]],         dtype=torch.long,    device=device)
-            w_elo = torch.tensor([row["white_elo"]],           dtype=torch.long,    device=device)
-            b_elo = torch.tensor([row["black_elo"]],           dtype=torch.long,    device=device)
+            meta  = torch.tensor([row["meta_tokens"]],       dtype=torch.long,    device=device)
+            color = torch.tensor([row["color_tokens"]],      dtype=torch.long,    device=device)
+            ptype = torch.tensor([row["piece_type_tokens"]], dtype=torch.long,    device=device)
+            filei = torch.tensor([row["file_tokens"]],       dtype=torch.long,    device=device)
+            ranki = torch.tensor([row["rank_tokens"]],       dtype=torch.long,    device=device)
+            w_elo = torch.tensor([row["white_elo"]],         dtype=torch.long,    device=device)
+            b_elo = torch.tensor([row["black_elo"]],         dtype=torch.long,    device=device)
             w_clk = torch.tensor([row["white_clock_seconds"]], dtype=torch.float32, device=device)
             b_clk = torch.tensor([row["black_clock_seconds"]], dtype=torch.float32, device=device)
+            incr  = torch.tensor([row["increment_seconds"]], dtype=torch.float32, device=device)
 
-            from_id  = row["from_square_id"]
-            to_id    = row["to_square_id"]
-            move_in  = torch.tensor([[from_id, to_id, row["promo_id"]]], dtype=torch.long, device=device)
+            move_in = torch.tensor(
+                [[row["from_file_id"], row["from_rank_id"], row["to_file_id"], row["to_rank_id"]]],
+                dtype=torch.long, device=device,
+            )
 
             with torch.no_grad():
                 from_logits, to_logits, _ = model(
-                    meta, color, ptype, filei, ranki, w_elo, b_elo, w_clk, b_clk, move_in
+                    meta_ids       = meta,
+                    color_ids      = color,
+                    piece_type_ids = ptype,
+                    file_ids       = filei,
+                    rank_ids       = ranki,
+                    white_elo      = w_elo,
+                    black_elo      = b_elo,
+                    white_clock_s  = w_clk,
+                    black_clock_s  = b_clk,
+                    increment_s    = incr,
+                    move_ids       = move_in,
                 )
 
-            from_target = torch.tensor([from_id - from_off], dtype=torch.long, device=device)
-            to_target   = torch.tensor([to_id   - to_off  ], dtype=torch.long, device=device)
+            from_target = torch.tensor([row["from_square_id"]], dtype=torch.long, device=device)
+            to_target   = torch.tensor([row["to_square_id"]],   dtype=torch.long, device=device)
 
             loss = (F.cross_entropy(from_logits, from_target) + F.cross_entropy(to_logits, to_target)).item()
             total_loss   += loss

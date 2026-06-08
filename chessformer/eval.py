@@ -1,12 +1,13 @@
 """
 chessformer/eval.py
 
-Evaluation functions for games and puzzles.
-Called by scripts/eval_offline.py and optionally by the Trainer for quick val.
+Core evaluation functions for games and puzzles.
+Called by scripts/eval.py — not intended to be run directly.
 """
 
 from __future__ import annotations
 
+import contextlib
 from collections import defaultdict
 from typing import Optional
 
@@ -16,26 +17,28 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from chessformer.tokenizer import Vocab
+def _autocast(device: torch.device, dtype: Optional[torch.dtype]):
+    if dtype is None or device.type not in ("cuda", "cpu"):
+        return contextlib.nullcontext()
+    return torch.amp.autocast(device_type=device.type, dtype=dtype)
 
 
 # ---------------------------------------------------------------------------
-# Games eval
+# Games
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
 def eval_games(
-    model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    vocab: Vocab,
-    max_batches: Optional[int] = None,
+    model:          nn.Module,
+    loader:         DataLoader,
+    device:         torch.device,
+    autocast_dtype: Optional[torch.dtype] = None,
+    max_batches:    Optional[int]          = None,
+    progress_cb     = None,   # callable() called after each batch
 ) -> dict:
     """
-    Evaluate on game positions.
-
     Returns:
-        loss, top1_acc, plausible_rate
+        loss, top1_acc, plausible_rate, n
         per_elo: {bucket_str: {loss, top1_acc, plausible_rate, n}}
     """
     model.eval()
@@ -47,40 +50,39 @@ def eval_games(
 
         elo_bkts = batch["elo_bucket"]
         move_ids = torch.stack([
-            batch["from_file"],
-            batch["from_rank"],
-            batch["to_file"],
-            batch["to_rank"],
+            batch["from_file"], batch["from_rank"],
+            batch["to_file"],   batch["to_rank"],
         ], dim=1).to(device)
 
-        from_logits, to_logits, _ = model(
-            meta_ids       = batch["meta_ids"].to(device),
-            color_ids      = batch["color_ids"].to(device),
-            piece_type_ids = batch["piece_type_ids"].to(device),
-            file_ids       = batch["file_ids"].to(device),
-            rank_ids       = batch["rank_ids"].to(device),
-            white_elo      = batch["white_elo"].to(device),
-            black_elo      = batch["black_elo"].to(device),
-            white_clock_s  = batch["white_clock_s"].to(device),
-            black_clock_s  = batch["black_clock_s"].to(device),
-            increment_s    = batch["increment_s"].to(device),
-            move_ids       = move_ids,
-        )
+        with _autocast(device, autocast_dtype):
+            from_logits, to_logits, _ = model(
+                meta_ids       = batch["meta_ids"].to(device),
+                color_ids      = batch["color_ids"].to(device),
+                piece_type_ids = batch["piece_type_ids"].to(device),
+                file_ids       = batch["file_ids"].to(device),
+                rank_ids       = batch["rank_ids"].to(device),
+                white_elo      = batch["white_elo"].to(device),
+                black_elo      = batch["black_elo"].to(device),
+                white_clock_s  = batch["white_clock_s"].to(device),
+                black_clock_s  = batch["black_clock_s"].to(device),
+                increment_s    = batch["increment_s"].to(device),
+                move_ids       = move_ids,
+            )
 
-        from_target = batch["from_sq"].to(device)  # 0-63
-        to_target   = batch["to_sq"].to(device)    # 0-63
+        from_logits = from_logits.float()
+        to_logits   = to_logits.float()
+        from_target = batch["from_sq"].to(device)
+        to_target   = batch["to_sq"].to(device)
 
-        loss = (F.cross_entropy(from_logits, from_target) + F.cross_entropy(to_logits, to_target)).item()
-
+        loss     = (F.cross_entropy(from_logits, from_target)
+                    + F.cross_entropy(to_logits, to_target)).item()
         from_pred = from_logits.argmax(-1)
         to_pred   = to_logits.argmax(-1)
-        top1      = ((from_pred == from_target) & (to_pred == to_target))
+        top1      = (from_pred == from_target) & (to_pred == to_target)
 
-        from_probs  = F.softmax(from_logits, dim=-1)
-        to_probs    = F.softmax(to_logits,   dim=-1)
-        from_p_gold = from_probs.gather(1, from_target.unsqueeze(1)).squeeze(1)
-        to_p_gold   = to_probs.gather(1,   to_target.unsqueeze(1)).squeeze(1)
-        plausible   = (from_p_gold >= 0.20) & (to_p_gold >= 0.20)
+        from_p = F.softmax(from_logits, dim=-1).gather(1, from_target.unsqueeze(1)).squeeze(1)
+        to_p   = F.softmax(to_logits,   dim=-1).gather(1, to_target.unsqueeze(1)).squeeze(1)
+        plaus  = (from_p >= 0.20) & (to_p >= 0.20)
 
         B = len(elo_bkts)
         for b in range(B):
@@ -88,49 +90,42 @@ def eval_games(
             for key in ("all", bkt):
                 totals[key]["loss"]      += loss / B
                 totals[key]["top1"]      += int(top1[b].item())
-                totals[key]["plausible"] += int(plausible[b].item())
+                totals[key]["plausible"] += int(plaus[b].item())
                 totals[key]["n"]         += 1
+
+        if progress_cb is not None:
+            progress_cb()
 
     def _agg(d: dict) -> dict:
         n = d["n"]
-        return {
-            "loss":           d["loss"]      / n,
-            "top1_acc":       d["top1"]      / n,
-            "plausible_rate": d["plausible"] / n,
-            "n":              n,
-        }
+        return {"loss": d["loss"]/n, "top1_acc": d["top1"]/n,
+                "plausible_rate": d["plausible"]/n, "n": n}
 
-    result = _agg(totals["all"])
+    result          = _agg(totals["all"])
     result["per_elo"] = {k: _agg(v) for k, v in totals.items() if k != "all"}
     return result
 
 
 # ---------------------------------------------------------------------------
-# Puzzles eval
+# Puzzles
 # ---------------------------------------------------------------------------
 
+@torch.no_grad()
 def eval_puzzles(
-    model: nn.Module,
-    parquet_path: str,
-    device: torch.device,
-    vocab: Vocab,
+    model:          nn.Module,
+    parquet_path:   str,
+    device:         torch.device,
+    autocast_dtype: Optional[torch.dtype] = None,
+    progress_cb     = None,   # callable() called after each puzzle
 ) -> dict:
     """
-    Evaluate on puzzles.
-
-    Metrics:
-      loss        — cross-entropy on solver moves only
-      accuracy    — 1.0 if ALL solver moves in a puzzle are correct (macro over puzzles)
-      advancement — fraction of consecutive correct moves from start (macro over puzzles)
-                    e.g. 3/4 correct → 0.75
-
-    Processes one puzzle at a time (puzzles vary in length and board state).
+    Returns:
+        loss, accuracy (all moves correct), advancement (avg fraction solved), n_puzzles
     """
     model.eval()
-
     df = pl.read_parquet(parquet_path)
 
-    puzzle_results = []   # list of (n_solver_moves, n_consecutive_correct)
+    puzzle_results: list[tuple[int, int]] = []
     total_loss   = 0.0
     total_loss_n = 0
 
@@ -155,56 +150,50 @@ def eval_puzzles(
             w_clk = torch.tensor([row["white_clock_seconds"]], dtype=torch.float32, device=device)
             b_clk = torch.tensor([row["black_clock_seconds"]], dtype=torch.float32, device=device)
             incr  = torch.tensor([row["increment_seconds"]], dtype=torch.float32, device=device)
-
             move_in = torch.tensor(
-                [[row["from_file_id"], row["from_rank_id"], row["to_file_id"], row["to_rank_id"]]],
+                [[row["from_file_id"], row["from_rank_id"],
+                  row["to_file_id"],   row["to_rank_id"]]],
                 dtype=torch.long, device=device,
             )
 
-            with torch.no_grad():
+            with _autocast(device, autocast_dtype):
                 from_logits, to_logits, _ = model(
-                    meta_ids       = meta,
-                    color_ids      = color,
-                    piece_type_ids = ptype,
-                    file_ids       = filei,
-                    rank_ids       = ranki,
-                    white_elo      = w_elo,
-                    black_elo      = b_elo,
-                    white_clock_s  = w_clk,
-                    black_clock_s  = b_clk,
-                    increment_s    = incr,
-                    move_ids       = move_in,
+                    meta_ids=meta, color_ids=color, piece_type_ids=ptype,
+                    file_ids=filei, rank_ids=ranki,
+                    white_elo=w_elo, black_elo=b_elo,
+                    white_clock_s=w_clk, black_clock_s=b_clk,
+                    increment_s=incr, move_ids=move_in,
                 )
 
-            from_target = torch.tensor([row["from_square_id"]], dtype=torch.long, device=device)
-            to_target   = torch.tensor([row["to_square_id"]],   dtype=torch.long, device=device)
+            from_logits = from_logits.float()
+            to_logits   = to_logits.float()
+            from_tgt = torch.tensor([row["from_square_id"]], dtype=torch.long, device=device)
+            to_tgt   = torch.tensor([row["to_square_id"]],   dtype=torch.long, device=device)
 
-            loss = (F.cross_entropy(from_logits, from_target) + F.cross_entropy(to_logits, to_target)).item()
+            loss = (F.cross_entropy(from_logits, from_tgt)
+                    + F.cross_entropy(to_logits, to_tgt)).item()
             total_loss   += loss
             total_loss_n += 1
 
-            correct = (
-                from_logits.argmax(-1).item() == from_target.item() and
-                to_logits.argmax(-1).item()   == to_target.item()
-            )
+            correct = (from_logits.argmax(-1).item() == from_tgt.item() and
+                       to_logits.argmax(-1).item()   == to_tgt.item())
             if correct and not found_mistake:
                 consecutive += 1
             else:
                 found_mistake = True
 
         puzzle_results.append((n_solver, consecutive))
+        if progress_cb is not None:
+            progress_cb()
 
     if not puzzle_results:
-        return {"loss": float("nan"), "accuracy": float("nan"), "advancement": float("nan"), "n_puzzles": 0}
+        return {"loss": float("nan"), "accuracy": float("nan"),
+                "advancement": float("nan"), "n_puzzles": 0}
 
     n_puzzles   = len(puzzle_results)
     accuracy    = sum(1 for n, k in puzzle_results if k == n) / n_puzzles
     advancement = sum(k / n for n, k in puzzle_results) / n_puzzles
-    avg_loss    = total_loss / total_loss_n if total_loss_n > 0 else float("nan")
+    avg_loss    = total_loss / total_loss_n if total_loss_n else float("nan")
 
-    return {
-        "loss":        avg_loss,
-        "accuracy":    accuracy,
-        "advancement": advancement,
-        "n_puzzles":   n_puzzles,
-    }
+    return {"loss": avg_loss, "accuracy": accuracy,
+            "advancement": advancement, "n_puzzles": n_puzzles}

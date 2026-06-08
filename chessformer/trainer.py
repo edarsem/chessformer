@@ -26,6 +26,8 @@ import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
+from chessformer.model import unwrap_state_dict
+
 
 def _autocast_ctx(device: torch.device, dtype: Optional[torch.dtype]):
     """Return the right autocast context manager for this device.
@@ -285,10 +287,9 @@ class Trainer:
         os.makedirs(self.cfg.paths.checkpoints_dir, exist_ok=True)
         fname = f"{tag}.pt" if tag else f"step_{step:07d}.pt"
         path  = os.path.join(self.cfg.paths.checkpoints_dir, fname)
-        model_state = (
-            self.model.module.state_dict()
-            if hasattr(self.model, "module") else self.model.state_dict()
-        )
+        # Strip DDP (module.) and torch.compile (_orig_mod.) prefixes so the
+        # checkpoint loads into a bare ChessformerModel with strict=True.
+        model_state = unwrap_state_dict(self.model.state_dict())
         torch.save({
             "step":      step,
             "model":     model_state,
@@ -310,8 +311,9 @@ class Trainer:
 
     def load_checkpoint(self, path: str) -> int:
         ckpt  = torch.load(path, map_location=self.device)
-        model = self.model.module if hasattr(self.model, "module") else self.model
-        model.load_state_dict(ckpt["model"])
+        model = getattr(self.model, "module", self.model)      # unwrap DDP
+        model = getattr(model, "_orig_mod", model)             # unwrap torch.compile
+        model.load_state_dict(unwrap_state_dict(ckpt["model"]), strict=True)
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.scheduler.load_state_dict(ckpt["scheduler"])
         step = ckpt["step"]

@@ -47,6 +47,21 @@ import torch.nn.functional as F
 from chessformer.tokenizer import Vocab, ELO_BRACKETS, CLOCK_BRACKETS_S, INCREMENT_BRACKETS_S
 
 
+def unwrap_state_dict(state_dict: dict) -> dict:
+    """Strip torch.compile (``_orig_mod.``) and DDP (``module.``) key prefixes.
+
+    A checkpoint saved from a compiled and/or DDP-wrapped model carries these
+    prefixes; a bare ChessformerModel does not. Stripping them lets the
+    checkpoint load with strict=True. Idempotent on already-clean checkpoints.
+    """
+    out = {}
+    for k, v in state_dict.items():
+        for prefix in ("module.", "_orig_mod."):
+            k = k.replace(prefix, "")
+        out[k] = v
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Transformer building blocks
 # ---------------------------------------------------------------------------

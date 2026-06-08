@@ -162,6 +162,11 @@ def _get_probs(board: chess.Board) -> Optional[dict]:
     probs, _ = analyze_position(_model, _vocab, _device, board, **_cond())
     return probs
 
+def _is_game_over(board: chess.Board) -> bool:
+    return (board.is_game_over()
+            or board.can_claim_fifty_moves()
+            or board.is_repetition(3))
+
 def _game_status(board: Optional[chess.Board] = None) -> str:
     b = board or _state.board
     if b.is_checkmate():             return "checkmate"
@@ -169,6 +174,8 @@ def _game_status(board: Optional[chess.Board] = None) -> str:
     if b.is_insufficient_material(): return "draw"
     if b.is_seventyfive_moves():     return "draw"
     if b.is_fivefold_repetition():   return "draw"
+    if b.can_claim_fifty_moves():    return "draw"
+    if b.is_repetition(3):          return "draw"
     if b.is_check():                 return "check"
     return "playing"
 
@@ -293,7 +300,7 @@ def post_move(req: MoveRequest):
                 _state.history_idx = len(_state.history)
 
     # Human vs AI: auto-play AI response
-    elif _state.mode == "human_vs_ai" and not board.is_game_over():
+    elif _state.mode == "human_vs_ai" and not _is_game_over(board):
         human_color = chess.WHITE if _state.human_side == "white" else chess.BLACK
         if board.turn != human_color:
             ai_mv = _run_ai(board)
@@ -308,7 +315,7 @@ def post_move(req: MoveRequest):
 def post_ai_move():
     if _state.history_idx < len(_state.history):
         raise HTTPException(status_code=400, detail="Navigate to latest first")
-    if _state.board.is_game_over():
+    if _is_game_over(_state.board):
         return JSONResponse(_state_with_probs())
     move = _run_ai(_state.board)
     if move:

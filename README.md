@@ -2,7 +2,7 @@
 
 A transformer that learns the human way to play chess by **imitating human Lichess games**.
 
-[Demo](https://huggingface.co/spaces/edarsem/chessformer-demo)
+[Demo](https://huggingface.co/spaces/edarsem/chessformer-demo) · [Model weights](https://huggingface.co/edarsem/chessformer) · [GitHub](https://github.com/edarsem/chessformer)
 
 Instead of training one "best move" engine, Chessformer is conditioned on the real game position: player's **Elo, remaining clock time, and time increment**. Ask it to play like a 1200, and it plays like a 1200. Ask it to play like a 2800, and it plays like a 2800. The same model spans the whole spectrum of human strength.
 
@@ -81,17 +81,36 @@ Default (`medium`) config: `d_model=512`, `n_heads=8`, `n_layers=12`, `ffn_mult=
 
 ## Results
 
-The released checkpoint (`chessformer_v0.pt`, 20k steps) on the Elo-balanced `val_games` split:
+Evaluated on the held-out test set (Lichess December 2017 — a different month from training, no game-level leakage).
+
+### What the metrics mean
+
+**Top-1 accuracy** — the model's single best guess exactly matches the move the human played (from-square and to-square).
+
+**Plausible 20%** — the human move is assigned ≥ 20% probability in *both* the from-square and to-square distributions. Even when not ranked first, the model often "sees" the correct move as a serious option.
+
+### Games — Elo-balanced test set (671k positions, 20 Elo buckets)
 
 | Metric | Value |
 | --- | --- |
-| Top-1 joint move accuracy (exact from+to) | **44.4%** |
-| Validation loss (from + to cross-entropy) | **1.785** |
+| Top-1 move accuracy | **44.4%** |
+| Plausible 20% | **62.9%** |
 
-Validation games are balanced across 20 Elo buckets (1000–2900) and drawn from a *different month* than the training data, so there's no game-level leakage. Run the full breakdown (per-Elo-bucket accuracy, legal-move rate, puzzle solve rate) with:
+Accuracy is roughly flat across 1100–2200 Elo (~43–45%), drops a little at the extremes where data is sparse.
+
+### Puzzles — 8 000 test puzzles (never seen during training)
+
+| Metric | Value |
+| --- | --- |
+| Solved (all moves correct) | **28.0%** |
+| Advancement (avg fraction of puzzle solved) | **34.0%** |
+
+Puzzles are entirely emergent — the model was never trained on them. Advancement > solved rate means it often finds the first move of a combo but misses the follow-up.
+
+Run the full per-Elo breakdown yourself:
 
 ```bash
-python scripts/eval_offline.py checkpoint=checkpoints/chessformer_v0.pt
+python scripts/eval.py checkpoint=checkpoints/chessformer_v0.pt split=test
 ```
 
 ---

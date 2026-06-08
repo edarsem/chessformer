@@ -15,4 +15,4 @@ Play against Chessformer, a ~50M parameter transformer trained to imitate human 
 Use the **Elo sliders** to set each side's strength. Set both to 2800 for strong play, or mix levels to see how the model adapts.
 
 **Source code:** [github.com/edarsem/chessformer](https://github.com/edarsem/chessformer)
-**Model weights:** see the linked model repo.
+**Model weights:** [huggingface.co/edarsem/chessformer](https://huggingface.co/edarsem/chessformer)

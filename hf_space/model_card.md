@@ -13,6 +13,8 @@ library_name: pytorch
 
 # Chessformer v0
 
+[Demo](https://huggingface.co/spaces/edarsem/chessformer-demo) · [GitHub](https://github.com/edarsem/chessformer)
+
 A ~50M parameter transformer trained to **imitate human chess play across the full Elo spectrum**, conditioned on player Elo, remaining clock time, and time increment.
 
 > **44.4% top-1 joint move accuracy** on a held-out, Elo-balanced validation set (predicting the exact human move — from-square and to-square).
@@ -70,18 +72,22 @@ Board pieces use **additive embeddings**: `emb[color] + emb[piece_type] + emb[fi
 - **LR:** 3e-4, cosine decay with 1000-step warmup
 - **Optimizer:** AdamW, weight decay 0.01
 
-## Metrics (val_games, Elo-balanced)
+## Metrics (test set, Elo-balanced, 671k positions)
+
+All numbers from the held-out test split (Lichess December 2017 — a different month from training data).
+
+**Top-1 accuracy** — the model's top prediction exactly matches the human move (from-square and to-square). A random legal move scores ~3–5%.
+
+**Plausible 20%** — the human move is assigned ≥ 20% probability in both the from-square and to-square distributions (the model "sees" the idea even when not picking it first).
 
 | Metric | Value |
 | --- | --- |
-| Top-1 joint move accuracy | **44.4%** |
-| Validation loss | **1.785** |
+| Top-1 move accuracy | **44.4%** |
+| Plausible 20% | **62.9%** |
+| Puzzle solved (all moves correct) | **28.0%** |
+| Puzzle advancement (avg fraction solved) | **34.0%** |
 
-## Limitations
-
-- Trained on one month of Lichess — tactical blindspots exist, especially in quiet positions.
-- Puzzle-solving is emergent and not explicitly optimized.
-- Clock conditioning is only as good as the training data's clock annotations.
+Accuracy is flat across 1100–2200 Elo, where training data is abundant. Puzzle-solving is fully emergent — the model was never trained on puzzles.
 
 ## License
 
@@ -89,8 +95,7 @@ Apache 2.0. Training data from [database.lichess.org](https://database.lichess.o
 
 ## Citation
 
-```
-@misc{chessformer2024,
+```@misc{chessformer2024,
   author = {Albert-Roulhac, Edouard},
   title  = {Chessformer: Elo-conditioned human chess imitation via transformer},
   year   = {2024},

@@ -1,48 +1,160 @@
 # Chessformer
 
-The goal of this project is to create a chess engine that understand human level strength and the difficulty to find specific moves.
+A transformer that learns the human way to play chess by **imitating human Lichess games**.
 
-I hope it will be usable as a coach, to help players find the move that they could find according to their level.
+Instead of training one "best move" engine, Chessformer is conditioned on the real game position: player's **Elo, remaining clock time, and time increment**. Ask it to play like a 1200, and it plays like a 1200. Ask it to play like a 2800, and it plays like a 2800. The same model spans the whole spectrum of human strength.
 
-I suspect that it could also be used as a cheating detection tool as it would have a better understanding of human chess as compared to a stockfish-based cheating detection tool.
+> **Status:** first public model. ~50M parameters, trained on ~6.6M positions from Lichess. Reaches **44.4% top-1 move accuracy** on a held-out, Elo-balanced validation set (predicting the *exact* human move, from-square and to-square).
 
-Finally, I hope that I can use those models to imitate a specific player style.
+---
 
-I will try to achieve this by training a transformer neural network from scratch.
+## Why this is interesting
 
-More specifically, as transformer models are naturally suited to sets, not for sequences, I will ask the model to predict the move of the position given a set of pieces representing the chess board and the level of the player to make a move.
+- **Human-like, not optimal.** Engines like Stockfish tell you the best move and they don't understand intuition or difficulty besides depth and compute budget. Chessformer tells you the intuitive moves *at a given level*. Useful for coaching ("what should a 1500 spot here?"), style imitation, and human-aware analysis.
+- **Strength is a dial.** Elo is a conditioning input, not a separate model.
+- **Clock-aware.** It sees how much time is left and the increment, so it can model time-pressure mistakes.
+- **No rules, no search.** It only ever sees board positions and the moves humans played. Legal-move understanding is emergent. It predicts moves in one forward pass, no tree search.
+- **Puzzles are a test, not a training signal.** Tactical puzzle-solving is measured as an emergent capability — the model is never trained on puzzles.
 
-I don't intend to give the model the rules of chess.
+## Play against it
 
-Here is an outline and more details about this personal project
+The repo ships a web UI (board, engine arrows, Elo / clock / increment sliders, puzzle mode):
 
-I created an environment. I intend to use the following python libraries
-berserk (for lichess)
-chess (for handling formats)
-torch (for deep learning)
+```bash
+pip install -r requirements.txt
+python scripts/serve.py checkpoint=checkpoints/chessformer_v0.pt
+```
 
-And of course the basics (pandas, ...)
+This opens `http://localhost:5174`. Set both sides' Elo, drag pieces, and watch the engine's top moves as arrows. Turn on "engine" to see the model's move distribution for any position.
 
-Here is more detail about what I want in this
+---
 
-Create a transformer model and train it on human chess games.
-I already have several data formats that I will need to handle, so I will need to do some work to convert them to FEN, which is close to what I want to use to input my model. For the moment, I have pgn files (with multiple games) and a file with puzzles which contains the base position and then the moves to be played.
-I will make files with many FEN and then use this to have train, test and val sets for both of pgn and puzzles data (to allow ablation studies and fine-grained analysis).
+## How it works
 
-Then I will send these to a tokenizer. This tokenizer will have tokens for
+### Board as a set of pieces
 
-- whose player it is to play
-- Each piece (white and black)
-- Each square on the board
-- The Elo of the players (as classes of 100 Elo, including unknown Elo)
-- The time control (classic, rapid, blitz, bullet, unknown time control)
-- Whether sides can castle
-- en passant of each column
-- padding
-- for the move to be played, from and to each square (example f_h5 and t_h5) as well as prom_n, prom_r, prom_b and prom_q if promotion is possible
+Each piece on the board is one token whose embedding is the **sum of four independent lookups**:
 
-The model will be autoregressive. It will be trained with the position and it will be trained to find first the square from, then the square to, and then, if needed, the promotion.
+```text
+piece_embedding = emb[color] + emb[piece_type] + emb[file] + emb[rank]
+```
 
-I intend to also train it on other things, maybe guessing the evaluation of the position with a regression head, or maybe to predict all the legal moves in a multi-class classification (on top of every piece, predicting squares where it is allowed to move).
+This factorization lets the model generalize across files, ranks, and piece types independently — a knight on f3 and a knight on c3 share structure automatically, and no explicit positional encoding is needed.
 
-For the architecture, i designed the tokenizer such that no positional embedding is needed. In fact, no positional embedding is needed for special tokens (Elo, castle etc.) but positional embeddings for pieces on the board are the square embedding for example a white Knight is on f3, the embeddings for tokens White_Knight and for token f3 will be added together.
+### Conditioning by soft-blended brackets
+
+Elo, clock, and increment are continuous, so they're encoded by **interpolating between the two nearest bracket embeddings**:
+
+```text
+emb = α · emb[lower_bracket] + (1 − α) · emb[upper_bracket]
+```
+
+At inference you can dial in any value (e.g. Elo 1873, 47 s on the clock) and the model blends smoothly. During training, conditioning is randomly dropped so the model also works when Elo/clock are unknown.
+
+### Sequence layout
+
+```text
+[meta] [w_elo] [b_elo] [w_clock] [b_clock] [increment] [piece_0 … piece_k] [BOS] [from] [to]
+└── 1 ──┘└──────────── 5 conditioning ──────────────┘└── up to 32 ──────┘└── move suffix ──┘
+```
+
+The **meta slot** is a single position whose embedding is the *sum* of the side-to-move, castling-rights, and en-passant tokens (additive, not sequential — castling rights don't deserve four sequence slots).
+
+### Autoregressive move head
+
+Moves are predicted in order: **from-square → to-square → promotion**. A single shared head predicts a square over 64 outputs (used for both from and to); a small separate head handles promotion. At training time this is one forward pass with a causal mask over the move suffix; the board prefix is fully bidirectional and cannot peek at the move tokens.
+
+### Architecture
+
+An autoregressive transformer block:
+
+- **Pre-norm RMSNorm**
+- **SwiGLU** feed-forward (4× expansion)
+- **Flash Attention** via `scaled_dot_product_attention`
+- **No biases** anywhere
+
+Default (`medium`) config: `d_model=512`, `n_heads=8`, `n_layers=12`, `ffn_mult=4` → **~50M parameters**. Max sequence length is just **41** tokens — the position encoding keeps sequences short, which makes training fast.
+
+---
+
+## Results
+
+The released checkpoint (`chessformer_v0.pt`, 20k steps) on the Elo-balanced `val_games` split:
+
+| Metric | Value |
+| --- | --- |
+| Top-1 joint move accuracy (exact from+to) | **44.4%** |
+| Validation loss (from + to cross-entropy) | **1.785** |
+
+Validation games are balanced across 20 Elo buckets (1000–2900) and drawn from a *different month* than the training data, so there's no game-level leakage. Run the full breakdown (per-Elo-bucket accuracy, legal-move rate, puzzle solve rate) with:
+
+```bash
+python scripts/eval_offline.py checkpoint=checkpoints/chessformer_v0.pt
+```
+
+---
+
+## Quickstart
+
+### 1. Install
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Play / analyze (with a trained checkpoint)
+
+```bash
+python scripts/serve.py checkpoint=checkpoints/chessformer_v0.pt   # web UI
+python scripts/play.py   checkpoint=checkpoints/chessformer_v0.pt   # terminal
+```
+
+### 3. Train from scratch
+
+```bash
+# Preprocess PGN + puzzle data → parquet
+python scripts/preprocess.py
+python scripts/make_splits.py
+
+# Smoke test (minutes, tiny subset)
+python scripts/train.py model=small train.train_file=train_games_tiny_file train.max_steps=50
+
+# Full run (single GPU)
+python scripts/train.py model=medium train.train_file=train_games_small_file
+
+# Multi-GPU
+torchrun --nproc_per_node=2 scripts/train.py model=medium
+```
+
+Config is [Hydra](https://hydra.cc/); override anything from the CLI (`train.lr=1e-4`, `model.n_layers=16`, …). A Kaggle 2×T4 training notebook is in [`notebooks/kaggle_train.ipynb`](notebooks/kaggle_train.ipynb).
+
+---
+
+## Data & splits
+
+Train/val/test boundaries are set by **source file**, so no position can leak across splits:
+
+| Split | Source | Use |
+| --- | --- | --- |
+| Train | Lichess `2018-01` | `train_games_small` ≈ 100k games / ~6.6M positions |
+| Val / Test | Lichess `2017-12` | ~2k Elo-balanced games each (1000–2900) |
+| Puzzles | Lichess puzzle CSV | val/test only — **never trained on** |
+
+Lichess monthly dumps are at [database.lichess.org](https://database.lichess.org/).
+
+## Repo structure
+
+```text
+chessformer/
+├── conf/            # Hydra configs (model / data / train)
+├── chessformer/     # importable library
+│   ├── tokenizer.py # vocab + FEN → tokens
+│   ├── model.py     # transformer
+│   ├── dataset.py   # parquet → batches
+│   ├── trainer.py   # training loop
+│   ├── inference.py # board → move / move distribution
+│   └── eval.py      # metrics
+├── scripts/         # preprocess, make_splits, train, eval_offline, serve, play
+├── ui/              # web UI
+└── notebooks/
+```

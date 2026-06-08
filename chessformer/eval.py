@@ -42,7 +42,9 @@ def eval_games(
         per_elo: {bucket_str: {loss, top1_acc, plausible_rate, n}}
     """
     model.eval()
-    totals: dict = defaultdict(lambda: {"loss": 0.0, "top1": 0, "plausible": 0, "n": 0})
+    totals: dict     = defaultdict(lambda: {"top1": 0, "plausible 20%": 0, "n": 0})
+    loss_sum: float  = 0.0
+    n_batches: int   = 0
 
     for i, batch in enumerate(loader):
         if max_batches is not None and i >= max_batches:
@@ -74,8 +76,11 @@ def eval_games(
         from_target = batch["from_sq"].to(device)
         to_target   = batch["to_sq"].to(device)
 
-        loss     = (F.cross_entropy(from_logits, from_target)
-                    + F.cross_entropy(to_logits, to_target)).item()
+        # cross_entropy already averages over the batch — accumulate as batch mean
+        loss_sum  += (F.cross_entropy(from_logits, from_target)
+                      + F.cross_entropy(to_logits, to_target)).item()
+        n_batches += 1
+
         from_pred = from_logits.argmax(-1)
         to_pred   = to_logits.argmax(-1)
         top1      = (from_pred == from_target) & (to_pred == to_target)
@@ -88,21 +93,22 @@ def eval_games(
         for b in range(B):
             bkt = elo_bkts[b]
             for key in ("all", bkt):
-                totals[key]["loss"]      += loss / B
                 totals[key]["top1"]      += int(top1[b].item())
-                totals[key]["plausible"] += int(plaus[b].item())
+                totals[key]["plausible 20%"] += int(plaus[b].item())
                 totals[key]["n"]         += 1
 
         if progress_cb is not None:
             progress_cb()
 
+    avg_loss = loss_sum / n_batches if n_batches else float("nan")
+
     def _agg(d: dict) -> dict:
         n = d["n"]
-        return {"loss": d["loss"]/n, "top1_acc": d["top1"]/n,
-                "plausible_rate": d["plausible"]/n, "n": n}
+        return {"top1_acc": d["top1"]/n, "plausible 20%": d["plausible 20%"]/n, "n": n}
 
-    result          = _agg(totals["all"])
-    result["per_elo"] = {k: _agg(v) for k, v in totals.items() if k != "all"}
+    result              = _agg(totals["all"])
+    result["loss"]      = avg_loss
+    result["per_elo"]   = {k: _agg(v) for k, v in totals.items() if k != "all"}
     return result
 
 

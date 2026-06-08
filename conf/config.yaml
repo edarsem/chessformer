@@ -25,3 +25,4 @@ black_elo: null   # defaults to ai_elo if null
 temperature: 1.0
 display: ascii
 port: 5174
+open_browser: true

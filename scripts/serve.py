@@ -268,24 +268,29 @@ def post_move(req: MoveRequest):
     if not board.is_legal(move):
         raise HTTPException(status_code=400, detail=f"Illegal move: {req.uci}")
 
+    # Puzzle mode: reject wrong moves before touching board state
+    # puzzle_moves = [setup_by_opp, solver1, opp1, solver2, opp2, ...]
+    if _state.mode == "puzzle" and _state.puzzle_moves:
+        solver_idx = 1 + _state.puzzle_step * 2
+        if solver_idx < len(_state.puzzle_moves) and req.uci != _state.puzzle_moves[solver_idx]:
+            raise HTTPException(status_code=400, detail="Wrong move")
+
     board.push(move)
     _state.history.append(move)
     _state.history_idx = len(_state.history)
     _state.selected_sq = None
 
-    # Puzzle: validate against solution
-    # puzzle_moves = [setup_by_opp, solver1, opp1, solver2, opp2, ...]
+    # Puzzle: advance state (move already validated above)
     if _state.mode == "puzzle" and _state.puzzle_moves:
         solver_idx = 1 + _state.puzzle_step * 2
         if solver_idx < len(_state.puzzle_moves):
-            if req.uci == _state.puzzle_moves[solver_idx]:
-                _state.puzzle_step += 1
-                opp_idx = 2 * _state.puzzle_step
-                if opp_idx < len(_state.puzzle_moves):
-                    opp_move = board.parse_uci(_state.puzzle_moves[opp_idx])
-                    board.push(opp_move)
-                    _state.history.append(opp_move)
-                    _state.history_idx = len(_state.history)
+            _state.puzzle_step += 1
+            opp_idx = 2 * _state.puzzle_step
+            if opp_idx < len(_state.puzzle_moves):
+                opp_move = board.parse_uci(_state.puzzle_moves[opp_idx])
+                board.push(opp_move)
+                _state.history.append(opp_move)
+                _state.history_idx = len(_state.history)
 
     # Human vs AI: auto-play AI response
     elif _state.mode == "human_vs_ai" and not board.is_game_over():
@@ -357,6 +362,18 @@ def get_history(idx: int):
     _state.history_idx  = idx
     _state.selected_sq  = None
     return JSONResponse(_state_with_probs())
+
+@app.get("/pgn")
+def get_pgn():
+    game = chess.pgn.Game()
+    game.headers["White"] = "Human" if _state.human_side == "white" else "Chessformer"
+    game.headers["Black"] = "Chessformer" if _state.human_side == "white" else "Human"
+    node  = game
+    board = chess.Board()
+    for mv in _state.history:
+        node = node.add_variation(mv)
+        board.push(mv)
+    return JSONResponse({"pgn": str(game)})
 
 @app.post("/reset")
 def post_reset():
@@ -568,7 +585,8 @@ def main(cfg: DictConfig) -> None:
 
     port = int(getattr(cfg, "port", 5174))
     print(f"Serving at http://localhost:{port}")
-    webbrowser.open(f"http://localhost:{port}")
+    if cfg.get("open_browser", True):
+        webbrowser.open(f"http://localhost:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
 

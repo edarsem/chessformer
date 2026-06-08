@@ -389,6 +389,7 @@ kbd {
         <button class="btn btn-danger"  style="flex:1" onclick="resetPos()">Reset</button>
       </div>
       <button class="btn" id="btn-ai" onclick="triggerAi()" style="display:none">AI Move ▶</button>
+      <button class="btn" id="btn-pgn" onclick="copyPgn()" style="margin-top:4px" title="Copy PGN for Lichess / chess.com analysis">Copy PGN</button>
     </div>
 
     <!-- Engine analysis -->
@@ -685,6 +686,23 @@ function fmtClock(s) {
   if (s < 60)  return s + 's';
   const m = Math.floor(s / 60), r = s % 60;
   return r ? `${m}m${r}s` : `${m}m`;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// PGN export
+// ─────────────────────────────────────────────────────────────────────
+async function copyPgn() {
+  const data = await api('GET', '/pgn');
+  if (!data) return;
+  try {
+    await navigator.clipboard.writeText(data.pgn);
+    const btn = document.getElementById('btn-pgn');
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  } catch {
+    prompt('Copy PGN:', data.pgn);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────

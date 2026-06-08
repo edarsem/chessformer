@@ -1,23 +1,16 @@
 """
 scripts/play.py
 
-Play against a trained model or watch AI vs AI. No Jupyter required.
+Play against a trained model or watch AI vs AI in the terminal.
 
 Usage:
-    python scripts/play.py checkpoint=checkpoints/step_XXXXXXX.pt
+    python scripts/play.py checkpoint=checkpoints/chessformer_v0.pt
     python scripts/play.py checkpoint=... mode=ai_vs_ai
     python scripts/play.py checkpoint=... mode=human_vs_ai human_side=black
     python scripts/play.py checkpoint=... temperature=0.8 ai_elo=2800
 
-Modes:
-    human_vs_ai  — you play against the model (default: human=white)
-    ai_vs_ai     — watch the model play both sides
-
-Display: ASCII board in terminal. Pass display=svg to write an SVG to
-/tmp/chessformer_board.svg and open it in your browser each move.
-
 Human moves: UCI notation — e2e4, g1f3, e7e8q (promotion to queen).
-Type 'quit' or 'resign' to end.
+Type 'quit' to resign.
 """
 
 from __future__ import annotations
@@ -34,84 +27,9 @@ from omegaconf import DictConfig, OmegaConf
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from chessformer.model import ChessformerModel
-from chessformer.tokenizer import build_vocab, tokenize_position
-
-
-# ---------------------------------------------------------------------------
-# Board → model input helpers
-# ---------------------------------------------------------------------------
-
-def board_to_batch(board: chess.Board, vocab, white_elo: int, black_elo: int,
-                   device: torch.device) -> dict:
-    """Tokenize a board position into a single-item batch ready for model.forward."""
-    pos = tokenize_position(
-        fen=board.fen(),
-        vocab=vocab,
-        white_elo=white_elo,
-        black_elo=black_elo,
-        white_clock_seconds=-1.0,
-        black_clock_seconds=-1.0,
-        game_id="play",
-    )
-    def t(lst, dtype=torch.long):
-        return torch.tensor([lst], dtype=dtype, device=device)
-
-    return {
-        "meta_ids":       t(pos.meta_tokens),
-        "color_ids":      t(pos.color_tokens),
-        "piece_type_ids": t(pos.piece_type_tokens),
-        "file_ids":       t(pos.file_tokens),
-        "rank_ids":       t(pos.rank_tokens),
-        "white_elo":      torch.tensor([white_elo], dtype=torch.long, device=device),
-        "black_elo":      torch.tensor([black_elo], dtype=torch.long, device=device),
-        "white_clock_s":  torch.tensor([-1.0],      dtype=torch.float32, device=device),
-        "black_clock_s":  torch.tensor([-1.0],      dtype=torch.float32, device=device),
-    }
-
-
-def ai_move(
-    model: ChessformerModel,
-    board: chess.Board,
-    vocab,
-    white_elo: int,
-    black_elo: int,
-    device: torch.device,
-    temperature: float = 1.0,
-) -> chess.Move | None:
-    """Sample a legal move from the model. Returns None if no legal move found."""
-    batch = board_to_batch(board, vocab, white_elo, black_elo, device)
-
-    legal_moves = list(board.legal_moves)
-    if not legal_moves:
-        return None
-
-    # Try up to 10 samples, falling back to a random legal move
-    for attempt in range(10):
-        t = temperature if attempt < 5 else 0.0  # greedy on last attempts
-        from_ids, to_ids, promo_ids = model.sample_move(
-            meta_ids       = batch["meta_ids"],
-            color_ids      = batch["color_ids"],
-            piece_type_ids = batch["piece_type_ids"],
-            file_ids       = batch["file_ids"],
-            rank_ids       = batch["rank_ids"],
-            white_elo      = batch["white_elo"],
-            black_elo      = batch["black_elo"],
-            white_clock_s  = batch["white_clock_s"],
-            black_clock_s  = batch["black_clock_s"],
-            temperature    = t,
-        )
-        f_sq = int(from_ids[0].item()) - vocab.from_square_offset
-        t_sq = int(to_ids[0].item())   - vocab.to_square_offset
-        promo_local = int(promo_ids[0].item()) - vocab.promo_offset
-        promo = [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN][promo_local] if promo_local >= 0 else None
-        move = chess.Move(f_sq, t_sq, promotion=promo)
-        if board.is_legal(move):
-            return move
-
-    # Fallback: greedy argmax then random legal
-    import random
-    return random.choice(legal_moves)
+from chessformer.model import ChessformerModel, unwrap_state_dict
+from chessformer.tokenizer import build_vocab
+from chessformer.inference import pick_move
 
 
 # ---------------------------------------------------------------------------
@@ -125,14 +43,14 @@ def print_board(board: chess.Board) -> None:
 
 
 def show_svg(board: chess.Board, last_move: chess.Move | None = None) -> None:
-    svg = chess.svg.board(board, lastmove=last_move, size=400)
+    svg  = chess.svg.board(board, lastmove=last_move, size=400)
     path = "/tmp/chessformer_board.svg"
     with open(path, "w") as f:
         f.write(svg)
     try:
         subprocess.Popen(["open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
-        pass  # SVG written; user can open it manually
+        pass
 
 
 def display(board: chess.Board, last_move: chess.Move | None, use_svg: bool) -> None:
@@ -143,10 +61,8 @@ def display(board: chess.Board, last_move: chess.Move | None, use_svg: bool) -> 
 
 def game_result_str(board: chess.Board) -> str:
     result = board.result()
-    if result == "1-0":
-        return "White wins!"
-    if result == "0-1":
-        return "Black wins!"
+    if result == "1-0": return "White wins!"
+    if result == "0-1": return "Black wins!"
     return "Draw."
 
 
@@ -155,18 +71,21 @@ def game_result_str(board: chess.Board) -> str:
 # ---------------------------------------------------------------------------
 
 def human_vs_ai(
-    model, vocab, device,
+    model: ChessformerModel,
+    vocab,
+    device: torch.device,
     human_side: str,
-    white_elo: int, black_elo: int,
+    white_elo: int,
+    black_elo: int,
     temperature: float,
     use_svg: bool,
 ) -> None:
-    board = chess.Board()
+    board       = chess.Board()
     human_color = chess.WHITE if human_side == "white" else chess.BLACK
-    last_move = None
+    last_move   = None
 
     print(f"\nYou are {'White' if human_color == chess.WHITE else 'Black'}. "
-          f"AI Elo: white={white_elo} black={black_elo}")
+          f"Elo: white={white_elo}  black={black_elo}")
     print("Enter moves in UCI notation (e2e4). Type 'quit' to resign.\n")
 
     while not board.is_game_over():
@@ -188,7 +107,9 @@ def human_vs_ai(
                 except Exception:
                     print("  Invalid notation, try again.")
         else:
-            move = ai_move(model, board, vocab, white_elo, black_elo, device, temperature)
+            move = pick_move(model, vocab, device, board,
+                             white_elo=white_elo, black_elo=black_elo,
+                             argmax=False, temperature=temperature)
             if move is None:
                 print("AI has no legal moves.")
                 break
@@ -202,20 +123,25 @@ def human_vs_ai(
 
 
 def ai_vs_ai(
-    model, vocab, device,
-    white_elo: int, black_elo: int,
+    model: ChessformerModel,
+    vocab,
+    device: torch.device,
+    white_elo: int,
+    black_elo: int,
     temperature: float,
     use_svg: bool,
     max_moves: int = 200,
 ) -> None:
-    board = chess.Board()
+    board     = chess.Board()
     last_move = None
     print(f"\nAI vs AI  white_elo={white_elo}  black_elo={black_elo}  temp={temperature}\n")
 
     while not board.is_game_over() and board.fullmove_number <= max_moves:
         display(board, last_move, use_svg)
         side = "White" if board.turn == chess.WHITE else "Black"
-        move = ai_move(model, board, vocab, white_elo, black_elo, device, temperature)
+        move = pick_move(model, vocab, device, board,
+                         white_elo=white_elo, black_elo=black_elo,
+                         argmax=False, temperature=temperature)
         if move is None:
             break
         print(f"{side} plays: {move.uci()}")
@@ -263,7 +189,7 @@ def main(cfg: DictConfig) -> None:
         ffn_mult = saved_cfg.model.ffn_mult,
         dropout  = saved_cfg.model.dropout,
     ).to(device)
-    model.load_state_dict(ckpt["model"])
+    model.load_state_dict(unwrap_state_dict(ckpt["model"]), strict=True)
     model.eval()
     print(f"Loaded checkpoint at step {ckpt.get('step', 0)}  (device: {device})")
 

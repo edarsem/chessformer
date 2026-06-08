@@ -158,3 +158,25 @@ chessformer/
 ├── ui/              # web UI
 └── notebooks/
 ```
+
+## Roadmap
+
+The v0 model is a proof of concept. It trained well on 100k games. Planned next steps:
+
+**Bigger model, bigger data.** The current model saw ~6.6M positions from a single month of Lichess. We plan to train on multiple years Lichess history (billions of positions) and add a dedicated GM-level database to sharpen the top-Elo end to improve the overall model's understanding while keeping human games only. Larger model (100M–300M params) with a longer training run on proper GPU hardware.
+
+**Style impersonation.** Add a "player ID" token to the conditioning, so the model can learn to imitate specific players' styles. This is a natural extension of Elo conditioning, and the model can learn a person's favorite openings and aggressivity etc.
+
+**Position encoder as a shared backbone.** Chessformer is designed so the board-encoding layers — the set-of-pieces representation with additive piece embeddings — form a reusable *position encoder*, analogous to a vision encoder in a VLM. This encoder can be plugged into other tasks without retraining from scratch:
+
+- **Coach / multimodal LLM.** A language model that can *see* the board by attending to the position encoder's output, the same way a VLM attends to image patch embeddings. "Explain the plan for White in this position", "at 1500 Elo, is that tactic findable?" becomes a natural-language generation task conditioned on the encoded board state.
+
+- **Guess the Elo / Cheat detection.** Human-move likelihood from a model like this is a principled signal for detection: top moves that ranks in the top 1% of the model's distribution for a 1600-rated player and are played by a 1600 are suspicious in a way pure engine-centipawn analysis misses. The position encoder can feed into a dedicated anomaly-detection head.
+
+---
+
+## License
+
+Apache 2.0. See [LICENSE](LICENSE).
+
+Training data (Lichess monthly dumps) is released under [CC0](https://database.lichess.org/#standard_games) — no restrictions on use.

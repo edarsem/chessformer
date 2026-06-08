@@ -2,6 +2,8 @@
 
 A transformer that learns the human way to play chess by **imitating human Lichess games**.
 
+[Demo](https://huggingface.co/spaces/edarsem/chessformer-demo)
+
 Instead of training one "best move" engine, Chessformer is conditioned on the real game position: player's **Elo, remaining clock time, and time increment**. Ask it to play like a 1200, and it plays like a 1200. Ask it to play like a 2800, and it plays like a 2800. The same model spans the whole spectrum of human strength.
 
 > **Status:** first public model. ~50M parameters, trained on ~6.6M positions from Lichess. Reaches **44.4% top-1 move accuracy** on a held-out, Elo-balanced validation set (predicting the *exact* human move, from-square and to-square).
@@ -165,13 +167,21 @@ The v0 model is a proof of concept. It trained well on 100k games. Planned next 
 
 **Bigger model, bigger data.** The current model saw ~6.6M positions from a single month of Lichess. We plan to train on multiple years Lichess history (billions of positions) and add a dedicated GM-level database to sharpen the top-Elo end to improve the overall model's understanding while keeping human games only. Larger model (100M–300M params) with a longer training run on proper GPU hardware.
 
-**Style impersonation.** Add a "player ID" token to the conditioning, so the model can learn to imitate specific players' styles. This is a natural extension of Elo conditioning, and the model can learn a person's favorite openings and aggressivity etc.
+**Style impersonation.** Add a "player ID" token to the conditioning, so the model can learn to imitate specific players' styles. This is a natural extension of Elo conditioning, and the model can learn a person's favorite openings and aggressivity etc. I plan on training from scratch with conditioning on a few players, and then probably only do prompt-tuning for new players to avoid retraining the whole model every time or biasing the model.
 
 **Position encoder as a shared backbone.** Chessformer is designed so the board-encoding layers — the set-of-pieces representation with additive piece embeddings — form a reusable *position encoder*, analogous to a vision encoder in a VLM. This encoder can be plugged into other tasks without retraining from scratch:
 
 - **Coach / multimodal LLM.** A language model that can *see* the board by attending to the position encoder's output, the same way a VLM attends to image patch embeddings. "Explain the plan for White in this position", "at 1500 Elo, is that tactic findable?" becomes a natural-language generation task conditioned on the encoded board state.
 
 - **Guess the Elo / Cheat detection.** Human-move likelihood from a model like this is a principled signal for detection: top moves that ranks in the top 1% of the model's distribution for a 1600-rated player and are played by a 1600 are suspicious in a way pure engine-centipawn analysis misses. The position encoder can feed into a dedicated anomaly-detection head.
+
+## Modeling
+
+As of now, the model has no notion of game history and objective.
+
+- **History.** means that it can't learn about threefold repetition and 50-move rule, but I think that is not too important. It does have casting rights information. It also means that it doesn't know what the last move played was or on which move time was spent, which is quite important for a chess player in real life. For now, I don't have a satisfying way to represent history and to train the model with that. It may come in a subsequent model when starting to train actual text-based LLM with this model as a position encoder.
+
+- **Objective.** The model is trained to predict the next move, but it doesn't have a built-in notion of winning or losing nor an objective evaluation head. It can learn to imitate human moves, but it is not built to learn to win. I might train an evaluation head with the rest of the model frozen in the future. It may also be possible to fine-tune the model with AlphaZero (reinforcement learning from self-play with MCTS) but we need to make sure that this doesn't break the model's human intuition.
 
 ---
 

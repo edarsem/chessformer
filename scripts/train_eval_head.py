@@ -74,18 +74,28 @@ def main(cfg: DictConfig) -> None:
     if not checkpoint_path:
         raise ValueError("Provide checkpoint=<path> on the CLI")
 
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+    # Use the model arch stored in the checkpoint, not the Hydra CLI config.
+    # This avoids a mismatch when the checkpoint was trained with a different size.
+    ckpt_model_cfg = (ckpt.get("cfg") or {}).get("model") or {}
+    d_model  = ckpt_model_cfg.get("d_model",  cfg.model.d_model)
+    n_heads  = ckpt_model_cfg.get("n_heads",  cfg.model.n_heads)
+    n_layers = ckpt_model_cfg.get("n_layers", cfg.model.n_layers)
+    ffn_mult = ckpt_model_cfg.get("ffn_mult", cfg.model.ffn_mult)
+    print(f"Backbone arch from checkpoint: d_model={d_model} n_heads={n_heads} n_layers={n_layers} ffn_mult={ffn_mult}")
+
     # --- Vocab & backbone -----------------------------------------------------
     vocab    = build_vocab()
     backbone = ChessformerModel(
-        vocab   = vocab,
-        d_model = cfg.model.d_model,
-        n_heads = cfg.model.n_heads,
-        n_layers= cfg.model.n_layers,
-        ffn_mult= cfg.model.ffn_mult,
-        dropout = 0.0,  # frozen — dropout has no effect but keep it clean
+        vocab    = vocab,
+        d_model  = d_model,
+        n_heads  = n_heads,
+        n_layers = n_layers,
+        ffn_mult = ffn_mult,
+        dropout  = 0.0,
     ).to(device)
 
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state = ckpt.get("model", ckpt)
     backbone.load_state_dict(unwrap_state_dict(state), strict=True)
     print(f"Loaded backbone from {checkpoint_path}")
@@ -95,7 +105,7 @@ def main(cfg: DictConfig) -> None:
     backbone.eval()
 
     # --- Eval head ------------------------------------------------------------
-    eval_head = EvalHead(cfg.model.d_model).to(device)
+    eval_head = EvalHead(d_model).to(device)
     n_head = sum(p.numel() for p in eval_head.parameters())
     print(f"EvalHead: {n_head:,} trainable parameters")
 
@@ -136,22 +146,23 @@ def main(cfg: DictConfig) -> None:
     )
     scheduler = build_lr_schedule(optimizer, cfg.train.warmup_steps, cfg.train.max_steps)
 
-    use_amp = cfg.train.get("mixed_precision", True) and device.type in ("cuda", "mps")
-    amp_ctx = torch.amp.autocast(device_type=device.type) if use_amp else torch.amp.autocast(device_type="cpu", enabled=False)
-    scaler  = torch.cuda.amp.GradScaler(enabled=(use_amp and device.type == "cuda"))
+    use_amp = cfg.train.get("mixed_precision", True) and device.type == "cuda"
+    amp_ctx = torch.amp.autocast(device_type="cuda") if use_amp else torch.amp.autocast(device_type="cpu", enabled=False)
+    scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     # --- W&B ------------------------------------------------------------------
     run = None
     if cfg.wandb.get("enabled", True):
         try:
             import wandb
+            wandb.login(anonymous="never", timeout=10)
             run = wandb.init(
                 project = cfg.wandb.project,
                 entity  = cfg.wandb.get("entity") or os.environ.get("WANDB_ENTITY"),
                 name    = "eval_head",
                 config  = {
                     "backbone_ckpt": checkpoint_path,
-                    "d_model":       cfg.model.d_model,
+                    "d_model":       d_model,
                     "n_eval_params": n_head,
                     **dict(cfg.train),
                 },

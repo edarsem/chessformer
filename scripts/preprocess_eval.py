@@ -49,7 +49,7 @@ from chessformer.tokenizer import (
 )
 
 
-MATE_CP = 10_000  # centipawns for forced mate (100 pawns; tanh(10000/400) ≈ 1.0)
+MATE_CP = 2000  # centipawns for forced mate (20 pawns; tanh(2000/400) ≈ 1.0)
 
 
 EVAL_SCHEMA = pa.schema([

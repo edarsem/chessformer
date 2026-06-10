@@ -211,25 +211,28 @@ def main(cfg: DictConfig) -> None:
             loss       = F.mse_loss(pred, target)
 
         scaler.scale(loss).backward()
-        if cfg.train.get("grad_clip", 1.0) > 0:
+        grad_clip = cfg.train.get("grad_clip", 1.0)
+        if grad_clip > 0:
             scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_(eval_head.parameters(), cfg.train.grad_clip)
+            grad_norm = nn.utils.clip_grad_norm_(eval_head.parameters(), grad_clip).item()
+        else:
+            grad_norm = sum(p.grad.norm().item() ** 2 for p in eval_head.parameters() if p.grad is not None) ** 0.5
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
 
         step += 1
         if step % 100 == 0:
-            print(f"step {step:>6}  train_loss={loss.item():.4f}  lr={scheduler.get_last_lr()[0]:.2e}")
+            print(f"step {step:>6}  train_loss={loss.item():.4f}  grad_norm={grad_norm:.3f}  lr={scheduler.get_last_lr()[0]:.2e}")
 
         if step % cfg.train.val_every == 0:
             val_loss = _val_loss()
             print(f"step {step:>6}  val_loss={val_loss:.4f}")
             if run is not None:
-                run.log({"eval_head/train_loss": loss.item(), "eval_head/val_loss": val_loss, "step": step})
+                run.log({"eval_head/train_loss": loss.item(), "eval_head/val_loss": val_loss, "eval_head/grad_norm": grad_norm, "step": step})
 
         elif run is not None and step % 100 == 0:
-            run.log({"eval_head/train_loss": loss.item(), "step": step})
+            run.log({"eval_head/train_loss": loss.item(), "eval_head/grad_norm": grad_norm, "step": step})
 
         if step % cfg.train.checkpoint_every == 0:
             ckpt_path = os.path.join(checkpoints_dir, f"eval_head_step_{step:06d}.pt")
